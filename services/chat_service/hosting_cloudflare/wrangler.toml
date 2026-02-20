@@ -1,0 +1,17 @@
+name = "bgmi_chat_service"
+main = "index.js"
+compatibility_date = "2025-11-11"
+
+[[d1_databases]]
+binding = "chat_db"
+database_name = "bgmi_chat_db"
+database_id = "ce6830fc-d9b7-4977-95e2-47dc51f509e0"
+
+[vars]
+JWT_SECRET = "supersecretkey"
+ADMIN_PASSWORD = "ELEGENT1832"
+ADMIN_EMAIL = "L4kushwaha@gmail.com"
+ADMIN_PHONE = "7905584212"
+SERVICE_NAME = "chat_service"
+SERVICE_VERSION = "1.1.1"
+ENCRYPTION_SECRET ="bgmi_chat_encrypt_secret_32_len"
