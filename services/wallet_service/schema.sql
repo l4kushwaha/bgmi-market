@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS service_payments (
   razorpay_order_id TEXT,
   razorpay_payment_id TEXT,
   utr TEXT,                             -- UPI transaction reference (direct UPI flow)
+  payee_upi TEXT,                       -- UPI ID the buyer paid to (seller's own UPI or admin fallback)
+  payee_name TEXT,                      -- display name of payee
   status TEXT DEFAULT 'created',        -- awaiting_confirmation / submitted / paid / released
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   paid_at DATETIME

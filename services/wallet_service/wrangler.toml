@@ -7,6 +7,14 @@ binding = "bgmi_db"
 database_name = "bgmi_db"
 database_id = "c31098c3-afc8-481e-9191-b7b349853ebe"
 
+# Verification service base URL (used to resolve a seller's own UPI ID for direct payment)
+[vars]
+VERIFY_URL = "https://verification_service.bgmi-gateway.workers.dev"
+
+[[services]]
+binding = "VERIFICATION_SERVICE"
+service = "verification_service"
+
 # Secrets (set via `wrangler secret put bgmi-marketplace <NAME>`, never commit):
 #   RAZORPAY_KEY_ID     – Razorpay live/test key id
 #   RAZORPAY_KEY_SECRET – Razorpay key secret

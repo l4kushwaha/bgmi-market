@@ -130,9 +130,9 @@ export default {
             message: "Payment already created",
             payment_id: existing.id,
             order_id: existing.order_id,
-            upi_id: env.ADMIN_UPI_ID || "pay@bgmimarket",
-            upi_name: env.ADMIN_UPI_NAME || "BGMI Market",
-            upi_amount: existing.admin_fee,
+            upi_id: existing.payee_upi || env.ADMIN_UPI_ID || "pay@bgmimarket",
+            upi_name: existing.payee_name || env.ADMIN_UPI_NAME || "BGMI Market",
+            upi_amount: existing.total_amount,
             status: existing.status,
             utr: existing.utr || null
           });
@@ -141,12 +141,36 @@ export default {
         const admin_fee = Math.floor(Number(amount) * 0.10);
         const seller_amount = Number(amount) - admin_fee;
 
+        /* ---- Resolve payee: seller's own UPI (from profile) or admin fallback ---- */
+        let payee_upi = env.ADMIN_UPI_ID || "pay@bgmimarket";
+        let payee_name = env.ADMIN_UPI_NAME || "BGMI Market";
+        let payee_is_seller = false;
+        const verifyBase = env.VERIFY_URL || "https://verification_service.bgmi-gateway.workers.dev";
+        try {
+          const sellerReq = new Request(`${verifyBase}/seller/upi/${String(seller_id).replace(/[^0-9]/g, "")}`, {
+            headers: { Authorization: req.headers.get("Authorization") || "" }
+          });
+          const sellerRes = env.VERIFICATION_SERVICE
+            ? await env.VERIFICATION_SERVICE.fetch(sellerReq)
+            : await fetch(sellerReq);
+          if (sellerRes.ok) {
+            const sellerInfo = await sellerRes.json();
+            if (sellerInfo.has_upi && sellerInfo.upi_id) {
+              payee_upi = sellerInfo.upi_id;
+              payee_name = sellerInfo.upi_name || "Seller";
+              payee_is_seller = true;
+            }
+          }
+        } catch (e) {
+          // network/service error → fall back to admin UPI
+        }
+
         const payment_id = crypto.randomUUID();
         await db.prepare(`
           INSERT INTO service_payments
           (id, order_id, buyer_id, seller_id, total_amount,
-           admin_fee, seller_amount, status, utr)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'awaiting_confirmation', NULL)
+           admin_fee, seller_amount, status, utr, payee_upi, payee_name)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'awaiting_confirmation', NULL, ?, ?)
         `).bind(
           payment_id,
           order_id,
@@ -154,18 +178,23 @@ export default {
           seller_id,
           Number(amount),
           admin_fee,
-          seller_amount
+          seller_amount,
+          payee_upi,
+          payee_name
         ).run();
 
         return json({
           payment_id,
           order_id,
-          upi_id: env.ADMIN_UPI_ID || "pay@bgmimarket",
-          upi_name: env.ADMIN_UPI_NAME || "BGMI Market",
-          upi_amount: admin_fee,
+          upi_id: payee_upi,
+          upi_name: payee_name,
+          upi_amount: Number(amount),
           total_amount: Number(amount),
           status: "awaiting_confirmation",
-          note: "Pay the amount to this UPI ID via any UPI app, then submit your UTR / reference number."
+          direct_to_seller: payee_is_seller,
+          note: payee_is_seller
+            ? "Pay the full amount directly to the seller's UPI ID, then submit your UTR / reference number."
+            : "Seller has not set a UPI ID yet. Pay to the platform UPI ID, then submit your UTR / reference number."
         });
       }
 

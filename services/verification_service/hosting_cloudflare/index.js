@@ -139,6 +139,24 @@ export default {
         });
       }
 
+      // Seller public UPI (any authenticated user — used for direct seller payment)
+      if (url.pathname.startsWith("/seller/upi/") && request.method === "GET") {
+        const user = await authUser();
+        if (!user) return json({ error: "unauthorized" }, 401);
+
+        const sellerId = String(url.pathname.split("/").pop()).replace(/[^0-9]/g, "");
+        if (!sellerId) return json({ error: "invalid_seller" }, 400);
+
+        const prof = await VERIFICATION_DB.prepare(
+          "SELECT name, upi_id FROM user_profiles WHERE user_id = ?"
+        ).bind(sellerId).first();
+
+        if (!prof || !prof.upi_id) {
+          return json({ has_upi: false, upi_id: null, upi_name: prof?.name || "Seller" });
+        }
+        return json({ has_upi: true, upi_id: prof.upi_id, upi_name: prof.name || "Seller" });
+      }
+
       // Fetch user profile (JWT required)
       if (url.pathname.startsWith("/profile/") && request.method === "GET") {
         const user = await authUser();
@@ -172,15 +190,21 @@ export default {
         if (userId !== String(user.id) && user.role !== "admin") {
           return json({ error: "forbidden" }, 403);
         }
-        const { name, gender, address, pan_number, bio, instagram, facebook } = data;
+        const { name, gender, address, pan_number, bio, instagram, facebook, upi_id } = data;
+
+        const cleanUpi = String(upi_id || "").replace(/[^\w.\-@]/g, "").trim().slice(0, 60);
+        if (upi_id && !/^[\w.\-]{2,}@[a-zA-Z]{2,}$/.test(cleanUpi)) {
+          return json({ error: "Invalid UPI ID (format: name@bank)" }, 400);
+        }
 
         await VERIFICATION_DB.prepare(
-          `INSERT INTO user_profiles (user_id, name, gender, address, pan_number, bio, instagram, facebook, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          `INSERT INTO user_profiles (user_id, name, gender, address, pan_number, bio, instagram, facebook, upi_id, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
            ON CONFLICT(user_id) DO UPDATE SET
              name=excluded.name, gender=excluded.gender, address=excluded.address,
              pan_number=excluded.pan_number, bio=excluded.bio,
              instagram=excluded.instagram, facebook=excluded.facebook,
+             upi_id=excluded.upi_id,
              updated_at=CURRENT_TIMESTAMP`
         ).bind(
           userId,
@@ -190,7 +214,8 @@ export default {
           pan_number || null,
           bio || null,
           instagram || null,
-          facebook || null
+          facebook || null,
+          cleanUpi || null
         ).run();
 
         return json({ message: "Profile updated successfully" });

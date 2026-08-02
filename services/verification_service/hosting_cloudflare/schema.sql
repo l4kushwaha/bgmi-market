@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS user_profiles (
   bio TEXT,
   instagram TEXT,
   facebook TEXT,
+  upi_id TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
