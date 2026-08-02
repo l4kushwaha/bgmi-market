@@ -66,6 +66,9 @@ export default {
       gift_items: safeJSON(r.gift_items),
       upgraded_guns: safeJSON(r.upgraded_guns),
       titles: safeJSON(r.titles),
+      x_suit: safeJSON(r.x_suit),
+      supercar: safeJSON(r.supercar),
+      ultimate: safeJSON(r.ultimate),
       images: safeJSON(r.images),
     });
 
@@ -163,9 +166,10 @@ export default {
         const insert = await db.prepare(
           `INSERT INTO listings
           (seller_id,uid,title,description,price,level,highest_rank,
-           mythic_items,legendary_items,gift_items,upgraded_guns,titles,images,
+           mythic_items,legendary_items,gift_items,upgraded_guns,titles,
+           x_suit,supercar,ultimate,images,
            status,avg_rating,review_count,seller_verified)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'available',0,0,0)`
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'available',0,0,0)`
         ).bind(
           String(user.id),
           b.uid,
@@ -179,6 +183,9 @@ export default {
           JSON.stringify(b.gift_items || []),
           JSON.stringify(b.upgraded_guns || []),
           JSON.stringify(b.titles || []),
+          JSON.stringify(b.x_suit || []),
+          JSON.stringify(b.supercar || []),
+          JSON.stringify(b.ultimate || []),
           JSON.stringify(b.images || [])
         ).run();
 
@@ -203,7 +210,8 @@ export default {
         await db.prepare(
           `UPDATE listings SET
             title=?, description=?, price=?, level=?, highest_rank=?,
-            mythic_items=?, legendary_items=?, gift_items=?, upgraded_guns=?, titles=?, images=?,
+            mythic_items=?, legendary_items=?, gift_items=?, upgraded_guns=?, titles=?,
+            x_suit=?, supercar=?, ultimate=?, images=?,
             updated_at=datetime('now')
            WHERE id=?`
         ).bind(
@@ -217,6 +225,9 @@ export default {
           JSON.stringify(b.gift_items || []),
           JSON.stringify(b.upgraded_guns || []),
           JSON.stringify(b.titles || []),
+          JSON.stringify(b.x_suit || []),
+          JSON.stringify(b.supercar || []),
+          JSON.stringify(b.ultimate || []),
           JSON.stringify(b.images || []),
           listingId
         ).run();

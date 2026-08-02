@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS listings (
   gift_items TEXT,
   upgraded_guns TEXT,
   titles TEXT,
+  x_suit TEXT,                           -- JSON array (X Suit skins)
+  supercar TEXT,                         -- JSON array (Supercars)
+  ultimate TEXT,                         -- JSON array (Ultimate items)
   images TEXT,                           -- JSON array of URLs
   status TEXT DEFAULT 'available',       -- available / pending / sold / hidden
   avg_rating REAL DEFAULT 0,
