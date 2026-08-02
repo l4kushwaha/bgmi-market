@@ -83,7 +83,10 @@ export default {
       }
 
       /* ==============================================
-         SERVICE CHARGE PAYMENT (10% admin fee)
+         SERVICE CHARGE PAYMENT (10% admin fee) — UPI
+         Direct UPI QR payment, no gateway / no KYC.
+         Buyer pays the admin UPI ID, then submits the
+         UTR for manual verification by admin.
          ============================================== */
       if (path === "/pay/service-charge" && method === "POST") {
         const user = await authUser();
@@ -101,43 +104,31 @@ export default {
         }
 
         const existing = await db.prepare(`
-          SELECT id FROM service_payments
-          WHERE order_id=? AND status='paid'
+          SELECT * FROM service_payments
+          WHERE order_id=? AND status IN ('awaiting_confirmation','submitted','paid','released')
         `).bind(order_id).first();
-
         if (existing) {
-          return json({ error: "service_charge_already_paid" }, 409);
+          return json({
+            message: "Payment already created",
+            payment_id: existing.id,
+            order_id: existing.order_id,
+            upi_id: env.ADMIN_UPI_ID || "pay@bgmimarket",
+            upi_name: env.ADMIN_UPI_NAME || "BGMI Market",
+            upi_amount: existing.admin_fee,
+            status: existing.status,
+            utr: existing.utr || null
+          });
         }
 
         const admin_fee = Math.floor(Number(amount) * 0.10);
         const seller_amount = Number(amount) - admin_fee;
 
-        const rpRes = await fetch("https://api.razorpay.com/v1/orders", {
-          method: "POST",
-          headers: {
-            "Authorization": "Basic " + btoa(env.RAZORPAY_KEY_ID + ":" + env.RAZORPAY_KEY_SECRET),
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            amount: admin_fee * 100,
-            currency: "INR",
-            receipt: "svc_" + order_id
-          })
-        });
-
-        if (!rpRes.ok) {
-          const e = await rpRes.text();
-          throw new Error("Razorpay order failed: " + e);
-        }
-
-        const rpOrder = await rpRes.json();
         const payment_id = crypto.randomUUID();
-
         await db.prepare(`
           INSERT INTO service_payments
           (id, order_id, buyer_id, seller_id, total_amount,
-           admin_fee, seller_amount, razorpay_order_id, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'created')
+           admin_fee, seller_amount, status, utr)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'awaiting_confirmation', NULL)
         `).bind(
           payment_id,
           order_id,
@@ -145,63 +136,62 @@ export default {
           seller_id,
           Number(amount),
           admin_fee,
-          seller_amount,
-          rpOrder.id
+          seller_amount
         ).run();
 
         return json({
-          razorpay_order_id: rpOrder.id,
-          razorpay_key: env.RAZORPAY_KEY_ID,
-          admin_fee,
-          seller_amount
+          payment_id,
+          order_id,
+          upi_id: env.ADMIN_UPI_ID || "pay@bgmimarket",
+          upi_name: env.ADMIN_UPI_NAME || "BGMI Market",
+          upi_amount: admin_fee,
+          total_amount: Number(amount),
+          status: "awaiting_confirmation",
+          note: "Pay the amount to this UPI ID via any UPI app, then submit your UTR / reference number."
         });
       }
 
       /* ==============================================
-         VERIFY PAYMENT (Razorpay callback)
+         SUBMIT UTR AFTER UPI PAYMENT
+         Buyer pays via UPI and submits the transaction
+         reference number for manual admin verification.
          ============================================== */
-      if (path === "/pay/verify" && method === "POST") {
+      if (path === "/pay/submit" && method === "POST") {
         const user = await authUser();
         if (!user) return json({ error: "unauthorized" }, 401);
 
         const body = await req.json();
-        const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = body;
+        const { order_id, utr } = body;
+        if (!order_id || !utr) return json({ error: "missing_order_id_or_utr" }, 400);
 
-        if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-          return json({ error: "missing_fields" }, 400);
-        }
-
-        const enc = new TextEncoder();
-        const data = `${razorpay_order_id}|${razorpay_payment_id}`;
-        const key = await crypto.subtle.importKey(
-          "raw",
-          enc.encode(env.RAZORPAY_KEY_SECRET),
-          { name: "HMAC", hash: "SHA-256" },
-          false,
-          ["sign"]
-        );
-        const sigBuf = await crypto.subtle.sign("HMAC", key, enc.encode(data));
-        const expectedSig = Array.from(new Uint8Array(sigBuf))
-          .map(b => b.toString(16).padStart(2, "0"))
-          .join("");
-
-        if (expectedSig !== razorpay_signature) {
-          return json({ error: "invalid_signature" }, 400);
+        const pay = await db.prepare(`
+          SELECT * FROM service_payments WHERE order_id=? AND status='awaiting_confirmation'
+        `).bind(order_id).first();
+        if (!pay) return json({ error: "payment_not_found" }, 404);
+        if (String(pay.buyer_id) !== String(user.id) && user.role !== "admin") {
+          return json({ error: "forbidden" }, 403);
         }
 
         await db.prepare(`
-          UPDATE service_payments
-          SET status='paid',
-              razorpay_payment_id=?,
-              paid_at=CURRENT_TIMESTAMP
-          WHERE razorpay_order_id=?
-        `).bind(razorpay_payment_id, razorpay_order_id).run();
+          UPDATE service_payments SET status='submitted', utr=? WHERE order_id=?
+        `).bind(String(utr).trim().toUpperCase(), order_id).run();
 
-        return json({ success: true });
+        return json({ message: "Payment submitted for verification", status: "submitted" });
+      }
+
+      /* ==============================================
+         VERIFY PAYMENT (legacy Razorpay callback)
+         Kept for compatibility — the UPI flow uses
+         /pay/submit + admin confirmation instead.
+         ============================================== */
+      if (path === "/pay/verify" && method === "POST") {
+        return json({ error: "use_upi_flow", message: "This flow uses direct UPI payment. Submit your UTR via /pay/submit." }, 400);
       }
 
       /* ==============================================
          RELEASE ESCROW TO SELLER (admin)
+         Admin verifies the buyer's UTR in the UPI app,
+         then confirms + releases the seller earnings.
          ============================================== */
       if (path === "/pay/release" && method === "POST") {
         const admin = await adminOnly();
@@ -212,10 +202,14 @@ export default {
         if (!order_id) return json({ error: "missing_order_id" }, 400);
 
         const pay = await db.prepare(`
-          SELECT * FROM service_payments WHERE order_id=? AND status='paid'
+          SELECT * FROM service_payments WHERE order_id=?
         `).bind(order_id).first();
 
         if (!pay) return json({ error: "payment_not_found" }, 404);
+        if (pay.status === "released") return json({ error: "already_released" }, 409);
+        if (pay.status !== "submitted" && pay.status !== "paid") {
+          return json({ error: "payment_not_confirmed", message: "Buyer must submit UTR first (status: " + pay.status + ")" }, 409);
+        }
 
         const existing = await db.prepare(`
           SELECT id FROM seller_earnings WHERE order_id=? AND status='released'
@@ -232,7 +226,7 @@ export default {
         `).bind(pay.seller_id, order_id, pay.seller_amount).run();
 
         return json({
-          message: "Escrow released",
+          message: "Payment confirmed & escrow released",
           seller_id: pay.seller_id,
           seller_amount: pay.seller_amount
         });

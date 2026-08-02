@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS service_payments (
   seller_amount REAL NOT NULL,
   razorpay_order_id TEXT,
   razorpay_payment_id TEXT,
-  status TEXT DEFAULT 'created',        -- created / paid / released
+  utr TEXT,                             -- UPI transaction reference (direct UPI flow)
+  status TEXT DEFAULT 'created',        -- awaiting_confirmation / submitted / paid / released
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   paid_at DATETIME
 );
