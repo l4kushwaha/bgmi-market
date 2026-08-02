@@ -7,9 +7,19 @@ binding = "chat_db"
 database_name = "bgmi_chat_db"
 database_id = "ce6830fc-d9b7-4977-95e2-47dc51f509e0"
 
+[[kv_namespaces]]
+binding = "chat_media"
+id = "1d512cdec7e748a38789bb4e6df49a37"
+
+[triggers]
+crons = ["*/30 * * * *"]
+
 [vars]
 SERVICE_NAME = "chat_service"
-SERVICE_VERSION = "1.1.1"
+SERVICE_VERSION = "1.2.0"
+GLOBAL_TTL_HOURS = "12"
+PRIVATE_TTL_HOURS = "24"
+ROOM_TTL_HOURS = "24"
 
 # Secrets (set via `wrangler secret put bgmi_chat_service <NAME>`, never commit):
 #   JWT_SECRET        – shared signing secret (identical across all workers)

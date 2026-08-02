@@ -11,10 +11,21 @@
  * =====================================================
  */
 
+const securityHeaders = {
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "no-referrer",
+  "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+  "X-XSS-Protection": "1; mode=block",
+  "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'"
+};
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "Content-Type,Authorization",
-  "Access-Control-Allow-Methods": "GET,POST,OPTIONS"
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+  ...securityHeaders
 };
 
 function base64UrlDecode(str) {
@@ -98,6 +109,13 @@ export default {
 
         if (!order_id || !seller_id || !amount) {
           return json({ error: "missing_fields" }, 400);
+        }
+        const amt = Number(amount);
+        if (!Number.isFinite(amt) || amt < 1 || amt > 10000000) {
+          return json({ error: "invalid_amount" }, 400);
+        }
+        if (String(order_id).length > 64 || !/^[A-Za-z0-9_-]+$/.test(String(order_id))) {
+          return json({ error: "invalid_order_id" }, 400);
         }
         if (buyer_id !== String(user.id) && user.role !== "admin") {
           return json({ error: "forbidden" }, 403);
@@ -274,10 +292,13 @@ export default {
         const amount = Number(body.amount);
         const upi_id = body.upi_id;
 
-        if (!amount || amount <= 0) return json({ error: "invalid_amount" }, 400);
+        if (!Number.isFinite(amount) || amount < 10 || amount > 10000000) {
+          return json({ error: "invalid_amount (min ₹10, max ₹10,000,000)" }, 400);
+        }
         if (!upi_id || !/^[\w.\-]{2,}@[a-zA-Z]{2,}$/.test(upi_id)) {
           return json({ error: "invalid_upi" }, 400);
         }
+        if (String(upi_id).length > 60) return json({ error: "invalid_upi" }, 400);
 
         const bal = await db.prepare(`
           SELECT COALESCE(SUM(amount),0) AS total FROM seller_earnings

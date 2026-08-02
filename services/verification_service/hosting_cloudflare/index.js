@@ -35,6 +35,16 @@ export default {
     const url = new URL(request.url);
     const { VERIFICATION_DB, UPLOADS } = env;
 
+    const securityHeaders = {
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+      "Referrer-Policy": "no-referrer",
+      "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+      "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+      "X-XSS-Protection": "1; mode=block",
+      "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'"
+    };
+
     const json = (data, status = 200) =>
       new Response(JSON.stringify(data), {
         status,
@@ -42,11 +52,12 @@ export default {
           "Content-Type": "application/json",
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Allow-Headers": "Content-Type,Authorization",
-          "Access-Control-Allow-Methods": "GET,POST,OPTIONS"
+          "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+          ...securityHeaders
         }
       });
 
-    if (request.method === "OPTIONS") return new Response("ok", { status: 204, headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET,POST,OPTIONS", "Access-Control-Allow-Headers": "Content-Type,Authorization" } });
+    if (request.method === "OPTIONS") return new Response("ok", { status: 204, headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET,POST,OPTIONS", "Access-Control-Allow-Headers": "Content-Type,Authorization", ...securityHeaders } });
 
     if (url.pathname === "/" || url.pathname === "/health") {
       return json({ service: "verification_service", version: "2.0.0", status: "running" });
@@ -72,12 +83,23 @@ export default {
         if (!file || !shareCode) {
           return json({ error: "Missing file or share_code" }, 400);
         }
+        if (file.size > 5 * 1024 * 1024) {
+          return json({ error: "File too large (max 5MB)" }, 400);
+        }
+        const cleanShare = String(shareCode).replace(/[^A-Za-z0-9]/g, "").slice(0, 40);
+        if (cleanShare.length < 4) {
+          return json({ error: "Invalid share code" }, 400);
+        }
         if (userId !== String(user.id) && user.role !== "admin") {
           return json({ error: "forbidden" }, 403);
         }
 
         const kvKey = `ekyc_${userId}_${Date.now()}`;
-        await UPLOADS.put(kvKey, await file.arrayBuffer());
+        const buf = await file.arrayBuffer();
+        if (buf.byteLength > 5 * 1024 * 1024) {
+          return json({ error: "File too large (max 5MB)" }, 400);
+        }
+        await UPLOADS.put(kvKey, buf);
 
         // Try to extract what we can; otherwise leave blank for manual review
         let parsedData = { name: "", gender: "", dob: "", address: "" };
@@ -93,7 +115,7 @@ export default {
           // not a valid zip or unparseable — still record submission
         }
 
-        const aadhaar = shareCode.length >= 4 ? "XXXX-XXXX-" + shareCode.slice(-4) : null;
+        const aadhaar = cleanShare.length >= 4 ? "XXXX-XXXX-" + cleanShare.slice(-4) : null;
 
         await VERIFICATION_DB.prepare(
           `INSERT INTO user_profiles (user_id, name, gender, dob, address, aadhaar_number, updated_at)
@@ -129,7 +151,7 @@ export default {
 
         const { results } = await VERIFICATION_DB.prepare("SELECT * FROM user_profiles WHERE user_id = ?").bind(userId).all();
         if (!results || results.length === 0)
-          return json({ error: "User not found" }, 404);
+          return json({ profile: { user_id: userId }, kyc: null, seller_stats: null });
 
         const kyc = await VERIFICATION_DB.prepare(
           "SELECT document_type, verification_status, confidence, remarks, created_at FROM kyc_documents WHERE user_id=? ORDER BY created_at DESC LIMIT 1"
@@ -150,11 +172,26 @@ export default {
         if (userId !== String(user.id) && user.role !== "admin") {
           return json({ error: "forbidden" }, 403);
         }
-        const { name, gender, address, pan_number } = data;
+        const { name, gender, address, pan_number, bio, instagram, facebook } = data;
 
         await VERIFICATION_DB.prepare(
-          `UPDATE user_profiles SET name=?, gender=?, address=?, pan_number=?, updated_at=CURRENT_TIMESTAMP WHERE user_id=?`
-        ).bind(name || null, gender || null, address || null, pan_number || null, userId).run();
+          `INSERT INTO user_profiles (user_id, name, gender, address, pan_number, bio, instagram, facebook, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(user_id) DO UPDATE SET
+             name=excluded.name, gender=excluded.gender, address=excluded.address,
+             pan_number=excluded.pan_number, bio=excluded.bio,
+             instagram=excluded.instagram, facebook=excluded.facebook,
+             updated_at=CURRENT_TIMESTAMP`
+        ).bind(
+          userId,
+          name || null,
+          gender || null,
+          address || null,
+          pan_number || null,
+          bio || null,
+          instagram || null,
+          facebook || null
+        ).run();
 
         return json({ message: "Profile updated successfully" });
       }

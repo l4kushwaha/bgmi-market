@@ -9,6 +9,9 @@ CREATE TABLE IF NOT EXISTS user_profiles (
   photo_url TEXT,
   aadhaar_number TEXT,
   pan_number TEXT,
+  bio TEXT,
+  instagram TEXT,
+  facebook TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );

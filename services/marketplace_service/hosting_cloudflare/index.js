@@ -19,16 +19,41 @@ export default {
     const method = request.method.toUpperCase();
     const db = env.marketplace_db;
 
+    const SECURITY_HEADERS = {
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+      "Referrer-Policy": "no-referrer",
+      "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+      "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+      "X-XSS-Protection": "1; mode=block",
+      "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'"
+    };
+
     const CORS_HEADERS = {
       "Content-Type": "application/json",
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type,Authorization",
+      ...SECURITY_HEADERS
     };
     if (method === "OPTIONS") return new Response("ok", { headers: CORS_HEADERS });
 
     const sendJSON = (obj, status = 200) =>
       new Response(JSON.stringify(obj), { status, headers: CORS_HEADERS });
+
+    const hits = new Map();
+    const rate = (key, max, windowMs) => {
+      const now = Date.now();
+      const rec = hits.get(key);
+      if (!rec || now - rec.t > windowMs) {
+        hits.set(key, { t: now, n: 1 });
+        return true;
+      }
+      if (rec.n >= max) return false;
+      rec.n++;
+      return true;
+    };
+    const cleanVal = (v, max) => String(v ?? "").replace(/[<>&'"`]/g, "").trim().slice(0, max);
 
     const safeJSON = (v, d = []) => {
       try { return JSON.parse(v || "[]"); } catch { return d; }
@@ -63,7 +88,7 @@ export default {
       ...r,
       mythic_items: safeJSON(r.mythic_items),
       legendary_items: safeJSON(r.legendary_items),
-      gift_items: safeJSON(r.gift_items),
+      honor_gift: safeJSON(r.honor_gift ?? r.gift_items),
       upgraded_guns: safeJSON(r.upgraded_guns),
       titles: safeJSON(r.titles),
       x_suit: safeJSON(r.x_suit),
@@ -156,6 +181,9 @@ export default {
       if (path === "/api/listings/create" && method === "POST") {
         const user = await verifyJWT(request);
         if (!user) return sendJSON({ error: "Unauthorized" }, 401);
+        if (!rate(`create:${user.id}`, 5, 60000)) {
+          return sendJSON({ error: "Too many listings. Try later." }, 429);
+        }
         await ensureSeller(user.id);
 
         const b = await request.json();
@@ -163,24 +191,34 @@ export default {
           return sendJSON({ error: "uid, title & price required" }, 400);
         }
 
+        const cleanUid = String(b.uid).replace(/[^0-9]/g, "").slice(0, 12);
+        if (!/^[0-9]{1,12}$/.test(cleanUid)) return sendJSON({ error: "Invalid UID" }, 400);
+        const cleanTitle = String(b.title).replace(/[<>&'"`]/g, "").trim().slice(0, 80);
+        if (!cleanTitle) return sendJSON({ error: "Title required" }, 400);
+        const price = Number(b.price);
+        if (!Number.isFinite(price) || price < 1 || price > 10000000) {
+          return sendJSON({ error: "Price must be between ₹1 and ₹10,000,000" }, 400);
+        }
+        const cleanDesc = String(b.description || "").replace(/[<>&'"`]/g, "").trim().slice(0, 1000);
+
         const insert = await db.prepare(
           `INSERT INTO listings
           (seller_id,uid,title,description,price,level,highest_rank,
-           mythic_items,legendary_items,gift_items,upgraded_guns,titles,
+           mythic_items,legendary_items,honor_gift,upgraded_guns,titles,
            x_suit,supercar,ultimate,images,
            status,avg_rating,review_count,seller_verified)
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'available',0,0,0)`
         ).bind(
           String(user.id),
-          b.uid,
-          b.title,
-          b.description || "",
-          b.price || 0,
+          cleanUid,
+          cleanTitle,
+          cleanDesc,
+          price,
           b.level || 0,
           b.highest_rank || "",
           JSON.stringify(b.mythic_items || []),
           JSON.stringify(b.legendary_items || []),
-          JSON.stringify(b.gift_items || []),
+          JSON.stringify(b.honor_gift ?? (b.gift_items || [])),
           JSON.stringify(b.upgraded_guns || []),
           JSON.stringify(b.titles || []),
           JSON.stringify(b.x_suit || []),
@@ -207,22 +245,29 @@ export default {
         }
 
         const b = await request.json();
+        const price = Number(b.price);
+        if (b.price !== undefined && (!Number.isFinite(price) || price < 1 || price > 10000000)) {
+          return sendJSON({ error: "Price must be between ₹1 and ₹10,000,000" }, 400);
+        }
+        const cleanTitle = b.title !== undefined ? cleanVal(b.title, 80) : undefined;
+        if (b.title !== undefined && !cleanTitle) return sendJSON({ error: "Title required" }, 400);
+        const cleanDesc = b.description !== undefined ? cleanVal(b.description, 1000) : undefined;
         await db.prepare(
           `UPDATE listings SET
             title=?, description=?, price=?, level=?, highest_rank=?,
-            mythic_items=?, legendary_items=?, gift_items=?, upgraded_guns=?, titles=?,
+            mythic_items=?, legendary_items=?, honor_gift=?, upgraded_guns=?, titles=?,
             x_suit=?, supercar=?, ultimate=?, images=?,
             updated_at=datetime('now')
            WHERE id=?`
         ).bind(
-          b.title,
-          b.description || "",
-          b.price || 0,
+          cleanTitle ?? b.title,
+          (cleanDesc ?? b.description) || "",
+          price || b.price || 0,
           b.level || 0,
           b.highest_rank || "",
           JSON.stringify(b.mythic_items || []),
           JSON.stringify(b.legendary_items || []),
-          JSON.stringify(b.gift_items || []),
+          JSON.stringify(b.honor_gift ?? (b.gift_items || [])),
           JSON.stringify(b.upgraded_guns || []),
           JSON.stringify(b.titles || []),
           JSON.stringify(b.x_suit || []),

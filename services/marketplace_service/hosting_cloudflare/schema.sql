@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS listings (
   highest_rank TEXT,
   mythic_items TEXT,                     -- JSON array
   legendary_items TEXT,
-  gift_items TEXT,
+  honor_gift TEXT,                       -- JSON array (Honor Gift items)
   upgraded_guns TEXT,
   titles TEXT,
   x_suit TEXT,                           -- JSON array (X Suit skins)

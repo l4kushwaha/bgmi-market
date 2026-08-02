@@ -1,10 +1,21 @@
 import bcrypt from "bcryptjs";
 import * as jose from "jose";
 
+const securityHeaders = {
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "no-referrer",
+  "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+  "X-XSS-Protection": "1; mode=block",
+  "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'"
+};
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type,Authorization"
+  "Access-Control-Allow-Headers": "Content-Type,Authorization",
+  ...securityHeaders
 };
 
 function jsonResponse(obj, status = 200) {
@@ -270,6 +281,9 @@ export default {
         if (!await checkRateLimit(env, `ip:login:${ip}`, 20, 60)) {
           return jsonResponse({ error: "Too many login attempts. Try later." }, 429);
         }
+        if (!await checkRateLimit(env, `acc:login:${String(email).toLowerCase()}`, 5, 300)) {
+          return jsonResponse({ error: "Too many attempts for this account. Try later." }, 429);
+        }
 
         const ADMIN_EMAIL = env.ADMIN_EMAIL;
         const ADMIN_PASSWORD = env.ADMIN_PASSWORD;
@@ -278,9 +292,9 @@ export default {
         }
 
         if (email.toLowerCase() === ADMIN_EMAIL.toLowerCase() && password === ADMIN_PASSWORD) {
-          const access = await jwtSign({ id: 0, email, role: "admin" }, env.JWT_SECRET, "15m");
-          const refresh = await jwtSign({ id: 0, email, role: "admin" }, env.JWT_SECRET, "7d");
-          return jsonResponse({ message: "Admin login", user: { id: 0, email, role: "admin" }, access_token: access, refresh_token: refresh });
+          const access = await jwtSign({ id: 0, email, role: "admin", name: "Admin" }, env.JWT_SECRET, "15m");
+          const refresh = await jwtSign({ id: 0, email, role: "admin", name: "Admin" }, env.JWT_SECRET, "7d");
+          return jsonResponse({ message: "Admin login", user: { id: 0, email, role: "admin", name: "Admin" }, access_token: access, refresh_token: refresh });
         }
 
         const { results } = await env.AUTH_DB.prepare(
@@ -300,13 +314,13 @@ export default {
           return jsonResponse({ error: "Invalid password" }, 401);
         }
 
-        const access = await jwtSign({ id: user.id, email: user.email, role: user.role || "user" }, env.JWT_SECRET, "15m");
-        const refresh = await jwtSign({ id: user.id, email: user.email, role: user.role || "user" }, env.JWT_SECRET, "7d");
+        const access = await jwtSign({ id: user.id, email: user.email, role: user.role || "user", name: user.username }, env.JWT_SECRET, "15m");
+        const refresh = await jwtSign({ id: user.id, email: user.email, role: user.role || "user", name: user.username }, env.JWT_SECRET, "7d");
         await logActivity(env, user.id, "login_success");
 
         return jsonResponse({
           message: "Login successful",
-          user: { id: user.id, email: user.email, username: user.username, role: user.role || "user" },
+          user: { id: user.id, email: user.email, username: user.username, role: user.role || "user", name: user.username },
           access_token: access,
           refresh_token: refresh
         });
@@ -317,6 +331,19 @@ export default {
         const body = await request.json().catch(() => ({}));
         const { email, username, password } = body;
         if (!email || !username || !password) return jsonResponse({ error: "Email, username & password required" }, 400);
+
+        if (typeof password !== "string" || password.length < 8) {
+          return jsonResponse({ error: "Password must be at least 8 characters" }, 400);
+        }
+        if (password.length > 128) return jsonResponse({ error: "Password too long" }, 400);
+
+        const cleanUser = String(username).replace(/[<>&'"`;()]/g, "").trim().slice(0, 20);
+        if (!/^[A-Za-z0-9_ ]{3,20}$/.test(cleanUser)) {
+          return jsonResponse({ error: "Username must be 3-20 characters (letters, numbers, _)" }, 400);
+        }
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(email)) || String(email).length > 100) {
+          return jsonResponse({ error: "Invalid email format" }, 400);
+        }
 
         if (TEMP_DOMAINS.some(d => email.endsWith(d))) return jsonResponse({ error: "Disposable email not allowed" }, 400);
 
@@ -337,7 +364,7 @@ export default {
             : "user";
         const insert = await env.AUTH_DB.prepare(
           "INSERT INTO users(email,username,password_hash,role,status,created_at) VALUES(?,?,?,?,?,datetime('now'))"
-        ).bind(email, username, hash, role, "active").run();
+        ).bind(email, cleanUser, hash, role, "active").run();
 
         const newId = insert.meta?.last_row_id ?? insert.lastInsertRowid;
         await logActivity(env, newId, "register");
@@ -359,7 +386,7 @@ export default {
 
         if (payload.id === 0) {
           const access = await jwtSign(
-            { id: 0, email: payload.email, role: "admin" },
+            { id: 0, email: payload.email, role: "admin", name: "Admin" },
             env.JWT_SECRET,
             "15m"
           );
@@ -367,7 +394,7 @@ export default {
         }
 
         const { results } = await env.AUTH_DB.prepare(
-          "SELECT id, email, role, status FROM users WHERE id=?"
+          "SELECT id, email, username, role, status FROM users WHERE id=?"
         ).bind(payload.id).all();
 
         if (!results.length) {
@@ -380,7 +407,7 @@ export default {
         }
 
         const access = await jwtSign(
-          { id: user.id, email: user.email, role: user.role || "user" },
+          { id: user.id, email: user.email, role: user.role || "user", name: user.username },
           env.JWT_SECRET,
           "15m"
         );
