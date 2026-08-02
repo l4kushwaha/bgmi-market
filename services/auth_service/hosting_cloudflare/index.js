@@ -73,12 +73,17 @@ async function checkRateLimit(env, key, limit = 5, windowMin = 15) {
     ).bind(key).run();
     return true;
   } else {
-    const expires = new Date(now.getTime() + windowMin * 60000).toISOString();
+    const expires = sqliteDatetime(new Date(now.getTime() + windowMin * 60000));
     await env.AUTH_DB.prepare(
       "INSERT INTO rate_limits(key,count,expires_at) VALUES(?,?,?)"
     ).bind(key, 1, expires).run();
     return true;
   }
+}
+
+// SQLite datetime() format: YYYY-MM-DD HH:MM:SS (string-comparable with datetime('now'))
+function sqliteDatetime(d) {
+  return d.toISOString().slice(0, 19).replace("T", " ");
 }
 
 const TEMP_DOMAINS = [

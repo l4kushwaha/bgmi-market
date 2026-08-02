@@ -105,6 +105,27 @@ export default {
     }
 
     try {
+      /* ================= SELLER VERIFY STATUS (must be before /api/seller/:id) ================= */
+      if (path === "/api/seller/verify-status" && method === "GET") {
+        const user = await verifyJWT(request);
+        if (!user) return sendJSON({ error: "Unauthorized" }, 401);
+
+        const req = await db.prepare(
+          `SELECT id, status, badge, reason, created_at, reviewed_at
+           FROM seller_verifications WHERE user_id=? ORDER BY created_at DESC LIMIT 1`
+        ).bind(String(user.id)).first();
+
+        const seller = await db.prepare(
+          "SELECT badge, status FROM sellers WHERE CAST(user_id AS TEXT)=?"
+        ).bind(String(user.id)).first();
+
+        return sendJSON({
+          request: req || null,
+          badge: seller?.badge || "new",
+          verified: !!seller && seller.badge !== "new"
+        });
+      }
+
       /* ================= SELLER PROFILE ================= */
       if (path.startsWith("/api/seller/") && method === "GET") {
         const parts = path.split("/");
@@ -470,26 +491,6 @@ export default {
         ).bind(String(user.id), badge).run();
 
         return sendJSON({ message: "Verification request submitted", id: insert.meta?.last_row_id ?? insert.lastInsertRowid, badge });
-      }
-
-      if (path === "/api/seller/verify-status" && method === "GET") {
-        const user = await verifyJWT(request);
-        if (!user) return sendJSON({ error: "Unauthorized" }, 401);
-
-        const req = await db.prepare(
-          `SELECT id, status, badge, reason, created_at, reviewed_at
-           FROM seller_verifications WHERE user_id=? ORDER BY created_at DESC LIMIT 1`
-        ).bind(String(user.id)).first();
-
-        const seller = await db.prepare(
-          "SELECT badge, status FROM sellers WHERE CAST(user_id AS TEXT)=?"
-        ).bind(String(user.id)).first();
-
-        return sendJSON({
-          request: req || null,
-          badge: seller?.badge || "new",
-          verified: !!seller && seller.badge !== "new"
-        });
       }
 
       /* ================= ADMIN: VERIFICATION QUEUE ================= */
