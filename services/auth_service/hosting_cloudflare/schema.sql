@@ -10,7 +10,29 @@ CREATE TABLE IF NOT EXISTS users (
   email TEXT NOT NULL UNIQUE,
   username TEXT NOT NULL,
   password_hash TEXT NOT NULL,
-  role TEXT DEFAULT 'user',  -- user / admin
+  role TEXT DEFAULT 'user',    -- user / seller / admin
+  status TEXT DEFAULT 'active', -- active / banned
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- =========================
+-- Rate Limits (login / register / OTP throttling)
+-- =========================
+CREATE TABLE IF NOT EXISTS rate_limits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  key TEXT NOT NULL UNIQUE,
+  count INTEGER DEFAULT 1,
+  expires_at TEXT
+);
+
+-- =========================
+-- Password Reset OTPs
+-- =========================
+CREATE TABLE IF NOT EXISTS password_resets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  otp TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 

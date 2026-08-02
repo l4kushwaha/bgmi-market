@@ -1,12 +1,12 @@
 /**
  * =====================================================
- * 🛒 BGMI Marketplace Service v3.3 (FULLY FIXED)
+ * 🛒 BGMI Marketplace Service v4.0.0
  * =====================================================
- * ✅ Listings CRUD (Create, Read, Update, Delete)
- * ✅ Seller profile full info
- * ✅ My Listings filter + Admin rights
- * ✅ Images, gifts, mythic, legendary, guns, titles included
- * ✅ JWT Auth
+ * ✅ Listings CRUD + single listing GET
+ * ✅ Reviews (create + seller aggregates)
+ * ✅ Purchases (escrow tracking)
+ * ✅ Admin moderation (list all, moderate status)
+ * ✅ JWT Auth (shared secret)
  * =====================================================
  */
 
@@ -22,7 +22,7 @@ export default {
     const CORS_HEADERS = {
       "Content-Type": "application/json",
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+      "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type,Authorization",
     };
     if (method === "OPTIONS") return new Response("ok", { headers: CORS_HEADERS });
@@ -39,7 +39,13 @@ export default {
       if (!auth) return null;
       const token = auth.split(" ")[1];
       if (!(await jwt.verify(token, env.JWT_SECRET))) return null;
-      return jwt.decode(token).payload;
+      const { payload } = jwt.decode(token);
+      if (!payload) return null;
+      const { results } = await db.prepare(
+        "SELECT role FROM users WHERE id=?"
+      ).bind(String(payload.id)).all();
+      if (results.length) payload.role = results[0].role;
+      return payload;
     }
 
     async function ensureSeller(userId) {
@@ -48,14 +54,24 @@ export default {
         .bind(sid).first();
       if (!s) {
         await db.prepare(
-          "INSERT INTO sellers (user_id, stars, badge, status, total_sales, total_revenue) VALUES (?,0,'new','active',0,0)"
+          "INSERT INTO sellers (user_id, stars, review_count, badge, status, total_sales, total_revenue) VALUES (?,0,0,'new','active',0,0)"
         ).bind(sid).run();
       }
     }
 
+    const normalize = r => ({
+      ...r,
+      mythic_items: safeJSON(r.mythic_items),
+      legendary_items: safeJSON(r.legendary_items),
+      gift_items: safeJSON(r.gift_items),
+      upgraded_guns: safeJSON(r.upgraded_guns),
+      titles: safeJSON(r.titles),
+      images: safeJSON(r.images),
+    });
+
     /* ================= HEALTH ================= */
     if (path === "/api/health") {
-      return sendJSON({ service: "marketplace", version: "3.3.0", status: "running" });
+      return sendJSON({ service: "marketplace", version: "4.0.0", status: "running" });
     }
 
     try {
@@ -64,7 +80,7 @@ export default {
         const parts = path.split("/");
         const sellerId = String(decodeURIComponent(parts[3] || ""));
         const seller = await db.prepare(
-          `SELECT user_id, stars, badge, status, total_sales, total_revenue
+          `SELECT user_id, stars, review_count, badge, status, total_sales, total_revenue
            FROM sellers WHERE CAST(user_id AS TEXT)=?`
         ).bind(sellerId).first();
 
@@ -75,31 +91,21 @@ export default {
         ).bind(sellerId).all();
 
         const reviews = await db.prepare(
-          `SELECT r.id, r.stars, r.comment, r.reply, r.created_at
-           FROM reviews r
-           JOIN orders o ON o.id=r.order_id
-           WHERE CAST(o.seller_id AS TEXT)=?
-           ORDER BY r.created_at DESC
-           LIMIT 20`
+          `SELECT id, buyer_id, stars, comment, reply, created_at
+           FROM reviews WHERE CAST(seller_id AS TEXT)=?
+           ORDER BY created_at DESC LIMIT 20`
         ).bind(sellerId).all();
 
         return sendJSON({
           user_id: seller.user_id,
           name: `Seller ${seller.user_id}`,
-          avg_rating: seller.stars || 0,
-          review_count: reviews.results.length,
+          avg_rating: Number(seller.stars || 0).toFixed(1),
+          review_count: seller.review_count || 0,
           seller_verified: seller.badge !== "new",
+          badge: seller.badge,
           total_sales: seller.total_sales,
           total_revenue: seller.total_revenue,
-          listings: listings.results.map(r => ({
-            ...r,
-            mythic_items: safeJSON(r.mythic_items),
-            legendary_items: safeJSON(r.legendary_items),
-            gift_items: safeJSON(r.gift_items),
-            upgraded_guns: safeJSON(r.upgraded_guns),
-            titles: safeJSON(r.titles),
-            images: safeJSON(r.images),
-          })),
+          listings: listings.results.map(normalize),
           reviews: reviews.results
         });
       }
@@ -126,24 +132,21 @@ export default {
         else if (filter === "price_low") q += " ORDER BY price ASC";
         else q += " ORDER BY created_at DESC";
 
-        const limit = Number(url.searchParams.get("limit") || 100);
+        const limit = Math.min(Number(url.searchParams.get("limit") || 100), 200);
         const offset = Number(url.searchParams.get("offset") || 0);
         q += " LIMIT ? OFFSET ?";
         binds.push(limit, offset);
 
         const { results } = await db.prepare(q).bind(...binds).all();
+        return sendJSON(results.map(normalize));
+      }
 
-        const normalized = results.map(r => ({
-          ...r,
-          mythic_items: safeJSON(r.mythic_items),
-          legendary_items: safeJSON(r.legendary_items),
-          gift_items: safeJSON(r.gift_items),
-          upgraded_guns: safeJSON(r.upgraded_guns),
-          titles: safeJSON(r.titles),
-          images: safeJSON(r.images),
-        }));
-
-        return sendJSON(normalized);
+      /* ================= GET SINGLE LISTING ================= */
+      if (path.startsWith("/api/listings/") && method === "GET" && !path.includes("/create")) {
+        const listingId = Number(path.split("/")[3]);
+        const listing = await db.prepare("SELECT * FROM listings WHERE id=?").bind(listingId).first();
+        if (!listing) return sendJSON({ error: "Listing not found" }, 404);
+        return sendJSON(normalize(listing));
       }
 
       /* ================= CREATE LISTING ================= */
@@ -153,7 +156,11 @@ export default {
         await ensureSeller(user.id);
 
         const b = await request.json();
-        await db.prepare(
+        if (!b.uid || !b.title || !b.price) {
+          return sendJSON({ error: "uid, title & price required" }, 400);
+        }
+
+        const insert = await db.prepare(
           `INSERT INTO listings
           (seller_id,uid,title,description,price,level,highest_rank,
            mythic_items,legendary_items,gift_items,upgraded_guns,titles,images,
@@ -175,7 +182,7 @@ export default {
           JSON.stringify(b.images || [])
         ).run();
 
-        return sendJSON({ message: "Listing created" });
+        return sendJSON({ message: "Listing created", id: insert.lastInsertRowid });
       }
 
       /* ================= EDIT LISTING ================= */
@@ -183,13 +190,8 @@ export default {
         const user = await verifyJWT(request);
         if (!user) return sendJSON({ error: "Unauthorized" }, 401);
 
-        const parts = path.split("/");
-        const listingId = parts[3];
-
-        const listing = await db.prepare(
-          "SELECT * FROM listings WHERE id=?"
-        ).bind(listingId).first();
-
+        const listingId = path.split("/")[3];
+        const listing = await db.prepare("SELECT * FROM listings WHERE id=?").bind(listingId).first();
         if (!listing) return sendJSON({ error: "Listing not found" }, 404);
 
         if (String(listing.seller_id) !== String(user.seller_id || user.id)
@@ -201,7 +203,8 @@ export default {
         await db.prepare(
           `UPDATE listings SET
             title=?, description=?, price=?, level=?, highest_rank=?,
-            mythic_items=?, legendary_items=?, gift_items=?, upgraded_guns=?, titles=?, images=?
+            mythic_items=?, legendary_items=?, gift_items=?, upgraded_guns=?, titles=?, images=?,
+            updated_at=datetime('now')
            WHERE id=?`
         ).bind(
           b.title,
@@ -226,13 +229,8 @@ export default {
         const user = await verifyJWT(request);
         if (!user) return sendJSON({ error: "Unauthorized" }, 401);
 
-        const parts = path.split("/");
-        const listingId = parts[3];
-
-        const listing = await db.prepare(
-          "SELECT * FROM listings WHERE id=?"
-        ).bind(listingId).first();
-
+        const listingId = path.split("/")[3];
+        const listing = await db.prepare("SELECT * FROM listings WHERE id=?").bind(listingId).first();
         if (!listing) return sendJSON({ error: "Listing not found" }, 404);
 
         if (String(listing.seller_id) !== String(user.seller_id || user.id)
@@ -242,6 +240,139 @@ export default {
 
         await db.prepare("DELETE FROM listings WHERE id=?").bind(listingId).run();
         return sendJSON({ message: "Listing deleted" });
+      }
+
+      /* ================= PURCHASE (create) ================= */
+      if (path === "/api/purchases" && method === "POST") {
+        const user = await verifyJWT(request);
+        if (!user) return sendJSON({ error: "Unauthorized" }, 401);
+
+        const b = await request.json();
+        if (!b.listing_id) return sendJSON({ error: "listing_id required" }, 400);
+
+        const listing = await db.prepare("SELECT * FROM listings WHERE id=?").bind(b.listing_id).first();
+        if (!listing) return sendJSON({ error: "Listing not found" }, 404);
+        if (listing.status !== "available") return sendJSON({ error: "Listing not available" }, 409);
+        if (String(listing.seller_id) === String(user.id)) {
+          return sendJSON({ error: "Cannot buy your own listing" }, 400);
+        }
+
+        const insert = await db.prepare(
+          `INSERT INTO purchases (listing_id, buyer_id, seller_id, price, payment_status, delivery_status, created_at, updated_at)
+           VALUES (?,?,?,?,'pending','awaiting',datetime('now'),datetime('now'))`
+        ).bind(b.listing_id, String(user.id), String(listing.seller_id), listing.price).run();
+
+        return sendJSON({
+          message: "Purchase created",
+          purchase: {
+            id: insert.lastInsertRowid,
+            listing_id: b.listing_id,
+            seller_id: String(listing.seller_id),
+            price: listing.price
+          }
+        });
+      }
+
+      /* ================= MY PURCHASES ================= */
+      if (path === "/api/purchases/my" && method === "GET") {
+        const user = await verifyJWT(request);
+        if (!user) return sendJSON({ error: "Unauthorized" }, 401);
+
+        const { results } = await db.prepare(
+          `SELECT p.*, l.title, l.uid
+           FROM purchases p LEFT JOIN listings l ON l.id=p.listing_id
+           WHERE p.buyer_id=? OR p.seller_id=?
+           ORDER BY p.created_at DESC`
+        ).bind(String(user.id), String(user.id)).all();
+
+        return sendJSON(results || []);
+      }
+
+      /* ================= CREATE REVIEW ================= */
+      if (path === "/api/reviews" && method === "POST") {
+        const user = await verifyJWT(request);
+        if (!user) return sendJSON({ error: "Unauthorized" }, 401);
+
+        const b = await request.json();
+        if (!b.listing_id || !b.stars) return sendJSON({ error: "listing_id & stars required" }, 400);
+        const stars = Number(b.stars);
+        if (!stars || stars < 1 || stars > 5) return sendJSON({ error: "stars must be 1-5" }, 400);
+
+        const listing = await db.prepare("SELECT * FROM listings WHERE id=?").bind(b.listing_id).first();
+        if (!listing) return sendJSON({ error: "Listing not found" }, 404);
+
+        const purchase = await db.prepare(
+          `SELECT * FROM purchases WHERE listing_id=? AND buyer_id=?`
+        ).bind(b.listing_id, String(user.id)).first();
+        if (!purchase) return sendJSON({ error: "Buy this listing before reviewing" }, 403);
+
+        const dup = await db.prepare(
+          "SELECT * FROM reviews WHERE listing_id=? AND buyer_id=?"
+        ).bind(b.listing_id, String(user.id)).first();
+        if (dup) return sendJSON({ error: "Already reviewed" }, 409);
+
+        await db.prepare(
+          `INSERT INTO reviews (listing_id, buyer_id, seller_id, stars, comment, created_at)
+           VALUES (?,?,?,?,?,datetime('now'))`
+        ).bind(b.listing_id, String(user.id), String(listing.seller_id), stars, b.comment || "").run();
+
+        const agg = await db.prepare(
+          `SELECT AVG(stars) AS avg, COUNT(*) AS cnt FROM reviews WHERE listing_id=?`
+        ).bind(b.listing_id).first();
+        await db.prepare(
+          `UPDATE listings SET avg_rating=?, review_count=?, updated_at=datetime('now') WHERE id=?`
+        ).bind(Number(agg.avg || 0).toFixed(1), agg.cnt, b.listing_id).run();
+
+        const sellerAgg = await db.prepare(
+          `SELECT AVG(stars) AS avg, COUNT(*) AS cnt FROM reviews WHERE seller_id=?`
+        ).bind(String(listing.seller_id)).first();
+        await db.prepare(
+          `UPDATE sellers SET stars=?, review_count=?, badge=CASE WHEN ?>=3 THEN 'trusted' ELSE 'new' END WHERE CAST(user_id AS TEXT)=?`
+        ).bind(Number(sellerAgg.avg || 0).toFixed(1), sellerAgg.cnt, sellerAgg.cnt, String(listing.seller_id)).run();
+
+        return sendJSON({ message: "Review submitted", rating: stars });
+      }
+
+      /* ================= ADMIN: ALL LISTINGS ================= */
+      if (path === "/api/admin/listings" && method === "GET") {
+        const user = await verifyJWT(request);
+        if (!user || user.role !== "admin") return sendJSON({ error: "Admin only" }, 403);
+
+        const status = url.searchParams.get("status") || "";
+        let q = "SELECT * FROM listings";
+        const binds = [];
+        if (status) { q += " WHERE status=?"; binds.push(status); }
+        q += " ORDER BY created_at DESC LIMIT 200";
+
+        const { results } = await db.prepare(q).bind(...binds).all();
+        return sendJSON(results.map(normalize));
+      }
+
+      /* ================= ADMIN: MODERATE LISTING ================= */
+      if (path.startsWith("/api/admin/listings/") && method === "PATCH") {
+        const user = await verifyJWT(request);
+        if (!user || user.role !== "admin") return sendJSON({ error: "Admin only" }, 403);
+
+        const listingId = path.split("/")[4];
+        const b = await request.json().catch(() => ({}));
+        const status = b.status;
+        if (!["available", "pending", "hidden", "sold"].includes(status)) {
+          return sendJSON({ error: "Invalid status" }, 400);
+        }
+
+        const listing = await db.prepare("SELECT * FROM listings WHERE id=?").bind(listingId).first();
+        if (!listing) return sendJSON({ error: "Listing not found" }, 404);
+
+        await db.prepare(
+          "UPDATE listings SET status=?, updated_at=datetime('now') WHERE id=?"
+        ).bind(status, listingId).run();
+
+        await db.prepare(
+          `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, created_at)
+           VALUES (?,?,?,?,datetime('now'))`
+        ).bind(String(user.id), `moderate_${status}`, String(listingId), b.reason || "").run();
+
+        return sendJSON({ message: "Listing moderated", id: listingId, status });
       }
 
     } catch (err) {

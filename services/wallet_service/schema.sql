@@ -1,10 +1,10 @@
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   role TEXT,
   upi_id TEXT
 );
 
-CREATE TABLE orders (
+CREATE TABLE IF NOT EXISTS orders (
   id TEXT PRIMARY KEY,
   buyer_id TEXT,
   seller_id TEXT,
@@ -16,19 +16,40 @@ CREATE TABLE orders (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE seller_earnings (
+CREATE TABLE IF NOT EXISTS service_payments (
+  id TEXT PRIMARY KEY,
+  order_id TEXT NOT NULL,
+  buyer_id TEXT NOT NULL,
+  seller_id TEXT NOT NULL,
+  total_amount REAL NOT NULL,
+  admin_fee REAL NOT NULL,
+  seller_amount REAL NOT NULL,
+  razorpay_order_id TEXT,
+  razorpay_payment_id TEXT,
+  status TEXT DEFAULT 'created',        -- created / paid / released
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  paid_at DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_sp_order_id ON service_payments(order_id);
+CREATE INDEX IF NOT EXISTS idx_sp_seller_id ON service_payments(seller_id);
+CREATE INDEX IF NOT EXISTS idx_sp_buyer_id ON service_payments(buyer_id);
+
+CREATE TABLE IF NOT EXISTS seller_earnings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   seller_id TEXT,
   order_id TEXT,
-  amount INTEGER,
-  status TEXT
-);
-
-CREATE TABLE withdraw_requests (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  seller_id TEXT,
-  amount INTEGER,
-  upi_id TEXT,
-  status TEXT,
+  amount REAL,
+  status TEXT,                          -- held / released
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_se_seller_id ON seller_earnings(seller_id);
+
+CREATE TABLE IF NOT EXISTS withdraw_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  seller_id TEXT,
+  amount REAL,
+  upi_id TEXT,
+  status TEXT,                          -- pending / processed / rejected
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_wr_seller_id ON withdraw_requests(seller_id);

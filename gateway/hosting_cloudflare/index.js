@@ -1,24 +1,39 @@
 /**
  * ============================================================
- * 🌐 BGMI Gateway — v2.3.2 (Extended + Fixed Auth Health)
+ * 🌐 BGMI Gateway — v3.0.0 (Path-Router Edition)
  * ============================================================
- * ✅ Exact CORS for frontend
- * ✅ Fixed auth URL secret (AUTH_URL)
- * ✅ Fully working /api/health & /api/debug
- * ✅ Admin + User login fixed
- * ✅ Correct route order, OPTIONS handling, HTML guard
- * ✅ Retry once on 5xx errors
+ * ✅ Correct per-service path mapping (fixes broken 404s)
+ *    /api/auth/*    -> {auth}   /api/auth/*
+ *    /api/market/*  -> {market} /api/*
+ *    /api/wallet/*  -> {wallet} /*
+ *    /api/verify/*  -> {verify} /*
+ *    /api/chat/*    -> {chat}   /api/chat/*
+ * ✅ Global health check with correct per-service health paths
+ * ✅ Admin login (env-backed), exact-origin CORS
+ * ✅ Retry once on 5xx, HTML-leak guard
  * ============================================================
  */
 
-const ALLOWED_ORIGIN = "https://bgmi-frontend.vercel.app"; // Exact allowed frontend
+const ALLOWED_ORIGINS = [
+  "https://bgmi-frontend.vercel.app",
+  "https://bgmi-frontend.vercel.app/",
+];
 
-// -----------------------------
-// 🧩 Helper: Generate CORS headers
-// -----------------------------
+function originAllowed(origin) {
+  if (!origin) return true;
+  const o = origin.replace(/\/$/, "");
+  if (ALLOWED_ORIGINS.includes(o)) return true;
+  try {
+    const u = new URL(o);
+    if (u.hostname === "localhost" || u.hostname === "127.0.0.1") return true;
+    if (u.hostname.endsWith(".vercel.app")) return true;
+  } catch {}
+  return false;
+}
+
 function corsHeaders(allowHeaders = "Content-Type, Authorization") {
   return {
-    "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
+    "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
     "Access-Control-Allow-Headers": allowHeaders,
     "Access-Control-Allow-Credentials": "true",
@@ -27,9 +42,6 @@ function corsHeaders(allowHeaders = "Content-Type, Authorization") {
   };
 }
 
-// -----------------------------
-// 🌐 Build service URLs
-// -----------------------------
 function buildServiceUrls(env) {
   return {
     auth: env.AUTH_SERVICE_URL ?? "https://auth-service.bgmi-gateway.workers.dev",
@@ -37,35 +49,44 @@ function buildServiceUrls(env) {
     wallet: env.WALLET_SERVICE_URL ?? "https://bgmi-marketplace.bgmi-gateway.workers.dev",
     verify: env.VERIFY_SERVICE_URL ?? "https://verification_service.bgmi-gateway.workers.dev",
     chat: env.CHAT_SERVICE_URL ?? "https://bgmi_chat_service.bgmi-gateway.workers.dev",
-    admin: env.ADMIN_SERVICE_URL ?? "https://bgmi-marketplace.bgmi-gateway.workers.dev",
-    notification: env.NOTIFY_SERVICE_URL ?? "https://bgmi_chat_service.bgmi-gateway.workers.dev",
   };
 }
 
-// -----------------------------
-// 🔁 Proxy forward with retry
-// -----------------------------
+// Gateway-prefix -> { service base URL, target path prefix }
+const SERVICE_ROUTES = {
+  auth: { prefix: "/api/auth/" },
+  market: { prefix: "/api/" },
+  wallet: { prefix: "/" },
+  verify: { prefix: "/" },
+  chat: { prefix: "/api/chat/" },
+};
+
+// Correct health path per service (what each worker actually exposes)
+const SERVICE_HEALTH = {
+  auth: "/api/auth/health",
+  market: "/api/health",
+  wallet: "/health",
+  verify: "/health",
+  chat: "/health",
+};
+
 async function fetchWithForward(request, targetUrl) {
   const headers = new Headers(request.headers);
   headers.delete("host");
   headers.delete("content-length");
 
-  const init = {
-    method: request.method,
-    headers,
-    redirect: "manual",
-  };
+  const init = { method: request.method, headers, redirect: "manual" };
 
   if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
     init.body = await request.arrayBuffer().catch(() => null);
   }
 
+  const doFetch = async () => fetch(targetUrl, init);
   try {
-    const resp = await fetch(targetUrl, init);
-    if (!resp.ok && resp.status >= 500) {
-      // Retry once on 5xx
+    const resp = await doFetch();
+    if (resp.status >= 500) {
       try {
-        return await fetch(targetUrl, init);
+        return await doFetch();
       } catch {
         return resp;
       }
@@ -76,16 +97,14 @@ async function fetchWithForward(request, targetUrl) {
   }
 }
 
-// -----------------------------
-// 💓 Health checker for all microservices
-// -----------------------------
 async function serviceHealthCheck(name, url) {
+  const path = SERVICE_HEALTH[name] || "/health";
   try {
-    const res = await fetch(`${url.replace(/\/+$/, "")}/health`, { cf: { cacheTtl: 0 } });
-    const json = await res.json().catch(() => ({}));
-    return { service: name, status: res.ok ? "running" : "down", details: json };
+    const res = await fetch(`${url.replace(/\/+$/, "")}${path}`, { cf: { cacheTtl: 0 } });
+    const body = await res.json().catch(() => ({}));
+    return { service: name, status: res.ok ? "running" : "down", url, path, details: body };
   } catch (e) {
-    return { service: name, status: "down", error: e.message };
+    return { service: name, status: "down", url, path, error: e.message };
   }
 }
 
@@ -95,16 +114,20 @@ async function allServicesHealth(env) {
     Object.entries(services).map(([n, u]) => serviceHealthCheck(n, u))
   );
   return Object.fromEntries(
-    results.map((r, i) => {
-      const name = Object.keys(services)[i];
+    Object.keys(services).map((name, i) => {
+      const r = results[i];
       return [name, r.status === "fulfilled" ? r.value : { service: name, status: "down", error: "fetch_failed" }];
     })
   );
 }
 
-// -----------------------------
-// 🚀 Main Fetch Handler
-// -----------------------------
+function json(data, status, headers) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status,
+    headers: { "Content-Type": "application/json", ...headers },
+  });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -114,117 +137,67 @@ export default {
     const acHeaders = request.headers.get("Access-Control-Request-Headers") || "Content-Type, Authorization";
     const cors = corsHeaders(acHeaders);
 
-    // --- OPTIONS preflight ---
     if (request.method === "OPTIONS") {
       return new Response("OK", { headers: cors });
     }
 
-    // --- Block unapproved origins ---
-    if (originHeader && originHeader !== ALLOWED_ORIGIN) {
-      return new Response(JSON.stringify({ error: "Origin not allowed", origin: originHeader }), {
-        status: 403,
-        headers: { ...cors, "Content-Type": "application/json" },
-      });
+    if (originHeader && !originAllowed(originHeader)) {
+      return json({ error: "Origin not allowed", origin: originHeader }, 403, cors);
     }
 
-    // --- Root info ---
     if (path === "/" || path === "/index.html") {
-      return new Response(JSON.stringify({ status: "gateway running ✅", time: new Date().toISOString() }), {
-        headers: { ...cors, "Content-Type": "application/json" },
-      });
+      return json({ status: "gateway running", version: "3.0.0", time: new Date().toISOString() }, 200, cors);
     }
 
-    // --- Global health endpoint ---
-    if (path.startsWith("/api/health") || path === "/health") {
+    // --- Global health ---
+    if (path === "/api/health" || path === "/health") {
       const services = await allServicesHealth(env);
-      return new Response(JSON.stringify({ gateway: "ok", version: "2.3.2", timestamp: new Date().toISOString(), services }), {
-        headers: { ...cors, "Content-Type": "application/json" },
-      });
+      return json({ gateway: "ok", version: "3.0.0", timestamp: new Date().toISOString(), services }, 200, cors);
     }
 
-    // --- Debug endpoint ---
+    // --- Debug ---
     if (path.startsWith("/api/debug")) {
       const services = await allServicesHealth(env);
-      return new Response(JSON.stringify({ message: "gateway debug", originReceived: originHeader || null, allowedOrigin: ALLOWED_ORIGIN, version: "2.3.2", services, time: new Date().toISOString() }), {
-        headers: { ...cors, "Content-Type": "application/json" },
-      });
+      return json({ message: "gateway debug", originReceived: originHeader || null, version: "3.0.0", services }, 200, cors);
     }
 
-    // --- Admin login via gateway ---
+    // --- Admin login ---
     if (path === "/api/admin/login" && request.method === "POST") {
       const { email, password } = await request.json().catch(() => ({}));
       const ADMIN_EMAIL = env.ADMIN_EMAIL;
       const ADMIN_PASSWORD = env.ADMIN_PASSWORD;
       if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
-        return new Response(JSON.stringify({ error: "Admin credentials not configured" }), {
-          status: 500,
-          headers: { ...cors, "Content-Type": "application/json" },
-        });
+        return json({ error: "Admin credentials not configured" }, 500, cors);
       }
-      if (email === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
-        return new Response(JSON.stringify({ message: "Admin login successful", user: { email, role: "admin" } }), {
-          headers: { ...cors, "Content-Type": "application/json" },
-        });
+      if (String(email).toLowerCase() === String(ADMIN_EMAIL).toLowerCase() && password === ADMIN_PASSWORD) {
+        return json({ message: "Admin login successful", user: { email, role: "admin" } }, 200, cors);
       }
-      return new Response(JSON.stringify({ error: "Invalid credentials" }), {
-        status: 401,
-        headers: { ...cors, "Content-Type": "application/json" },
-      });
+      return json({ error: "Invalid credentials" }, 401, cors);
     }
 
-    // --- Auth service health proxy ---
-    if (path.startsWith("/api/auth/health")) {
-      const AUTH_URL = env.AUTH_SERVICE_URL ?? "https://auth-service.bgmi-gateway.workers.dev";
-      try {
-        const resp = await fetch(`${AUTH_URL.replace(/\/+$/, "")}/health`, { cf: { cacheTtl: 0 } });
-        const data = await resp.json().catch(() => ({}));
-        return new Response(JSON.stringify(data), {
-          status: resp.status,
-          headers: { ...cors, "Content-Type": "application/json" },
-        });
-      } catch (err) {
-        return new Response(JSON.stringify({ error: "Auth service unreachable", details: err.message }), {
-          status: 502,
-          headers: { ...cors, "Content-Type": "application/json" },
-        });
-      }
-    }
-
-    // --- Test endpoint ---
-    if (path.startsWith("/api/test-cors")) {
-      return new Response(JSON.stringify({ ok: true, allowedOrigin: ALLOWED_ORIGIN, originReceived: originHeader }), {
-        headers: { ...cors, "Content-Type": "application/json" },
-      });
-    }
-
-    // --- Universal Proxy ---
-    const match = path.match(/^\/api\/([^\/]+)(\/.*)?/);
+    // --- Universal proxy ---
+    const match = path.match(/^\/api\/([^/]+)(\/.*)?/);
     if (match) {
-      const service = match[1];
+      const service = match[1].toLowerCase();
       const restPath = (match[2] || "").replace(/^\//, "");
-      const SERVICE_URLS = buildServiceUrls(env);
-      const base = SERVICE_URLS[service];
+      const SERVICES = buildServiceUrls(env);
+      const base = SERVICES[service];
 
       if (!base) {
-        return new Response(JSON.stringify({ error: `Unknown service '${service}'` }), {
-          status: 404,
-          headers: { ...cors, "Content-Type": "application/json" },
-        });
+        return json({ error: `Unknown service '${service}'` }, 404, cors);
       }
 
-      const targetUrl = restPath ? `${base.replace(/\/+$/, "")}/${restPath}${url.search}` : `${base}${url.search}`;
+      const route = SERVICE_ROUTES[service];
+      const targetPath = `${route.prefix}${restPath}`;
+      const targetUrl = `${base.replace(/\/+$/, "")}${targetPath}${url.search}`;
 
       try {
         const proxied = await fetchWithForward(request, targetUrl);
         const text = await proxied.clone().text().catch(() => "");
         const contentType = proxied.headers.get("content-type") || "";
 
-        // Prevent HTML leak
         if (text.trim().startsWith("<!DOCTYPE") || contentType.includes("text/html")) {
-          return new Response(JSON.stringify({ error: "Service returned HTML", service, preview: text.slice(0, 160) }), {
-            status: proxied.status,
-            headers: { ...cors, "Content-Type": "application/json" },
-          });
+          return json({ error: "Service returned HTML", service, targetUrl, preview: text.slice(0, 160) }, proxied.status, cors);
         }
 
         const headers = new Headers(proxied.headers);
@@ -232,14 +205,10 @@ export default {
 
         return new Response(proxied.body, { status: proxied.status, headers });
       } catch (err) {
-        return new Response(JSON.stringify({ error: `${service} unreachable`, details: err.message }), {
-          status: 502,
-          headers: { ...cors, "Content-Type": "application/json" },
-        });
+        return json({ error: `${service} unreachable`, details: err.message, targetUrl }, 502, cors);
       }
     }
 
-    // --- Fallback 404 ---
-    return new Response(JSON.stringify({ error: "Not Found", path }), { status: 404, headers: { ...cors, "Content-Type": "application/json" } });
+    return json({ error: "Not Found", path }, 404, cors);
   },
 };

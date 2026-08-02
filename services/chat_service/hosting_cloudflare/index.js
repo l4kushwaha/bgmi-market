@@ -283,6 +283,43 @@ if (path === "/api/chat/room" && method === "GET") {
         return json(results || []);
       }
 
+      /* ======================================================
+         ADMIN: LIST ALL ROOMS
+         ====================================================== */
+      if (path === "/api/chat/admin/rooms" && method === "GET") {
+        const user = await auth();
+        if (!user || user.role !== "admin") return json({ error: "admin_only" }, 403);
+
+        const status = url.searchParams.get("status") || "";
+        let q = `
+          SELECT r.*,
+            (SELECT COUNT(*) FROM messages m WHERE m.room_id=r.id) AS message_count
+          FROM chat_rooms r`;
+        const binds = [];
+        if (status) { q += " WHERE r.status=?"; binds.push(status); }
+        q += " ORDER BY r.created_at DESC LIMIT 200";
+
+        const { results } = await db.prepare(q).bind(...binds).all();
+        return json(results || []);
+      }
+
+      /* ======================================================
+         ADMIN: CLOSE / FORCE-CLOSE ROOM
+         ====================================================== */
+      if (path === "/api/chat/admin/close" && method === "POST") {
+        const user = await auth();
+        if (!user || user.role !== "admin") return json({ error: "admin_only" }, 403);
+
+        const body = await req.json();
+        if (!body.room_id) return json({ error: "missing_room_id" }, 400);
+
+        const room = await db.prepare("SELECT id FROM chat_rooms WHERE id=?").bind(body.room_id).first();
+        if (!room) return json({ error: "room_not_found" }, 404);
+
+        await db.prepare("UPDATE chat_rooms SET status='closed' WHERE id=?").bind(body.room_id).run();
+        return json({ message: "Room closed", room_id: body.room_id });
+      }
+
       return json({ error: "not_found" }, 404);
 
     } catch (err) {

@@ -3,7 +3,7 @@ import * as jose from "jose";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+  "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type,Authorization"
 };
 
@@ -77,7 +77,6 @@ const TEMP_DOMAINS = [
   "guerrillamail.com"
 ];
 
-// OTP Helper
 function generateOTP(len = 6) {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
@@ -92,7 +91,7 @@ async function sendOtpEmail(email, otp, env) {
     body: JSON.stringify({
       sender: {
         name: "BGMI Market",
-        email: "bgmipop00000036@hotmail.com" // ✅ verified sender
+        email: "bgmipop00000036@hotmail.com"
       },
       to: [{ email }],
       subject: "BGMI Market Password Reset OTP",
@@ -107,11 +106,35 @@ async function sendOtpEmail(email, otp, env) {
 
   if (!res.ok) {
     const err = await res.text();
-    console.error("❌ Brevo OTP Error:", err);
+    console.error("Brevo OTP Error:", err);
     throw new Error("Failed to send OTP email");
   }
 }
 
+async function adminOnly(request, env) {
+  const auth = request.headers.get("Authorization");
+  if (!auth) return null;
+  const token = auth.split(" ")[1];
+  const payload = await jwtVerify(token, env.JWT_SECRET);
+  if (!payload || payload.role !== "admin") return null;
+  return payload;
+}
+
+async function authUser(request, env) {
+  const auth = request.headers.get("Authorization");
+  if (!auth) return null;
+  const token = auth.split(" ")[1];
+  const payload = await jwtVerify(token, env.JWT_SECRET);
+  if (!payload) return null;
+  if (payload.id === 0) return payload;
+  const { results } = await env.AUTH_DB.prepare(
+    "SELECT id, email, username, role, status, created_at FROM users WHERE id=?"
+  ).bind(payload.id).all();
+  if (!results.length) return null;
+  const u = results[0];
+  if (u.status && u.status === "banned") return { banned: true };
+  return { ...u, email: u.email, role: u.role || "user" };
+}
 
 export default {
   async fetch(request, env) {
@@ -122,12 +145,121 @@ export default {
 
     try {
 
-      // HEALTH
       if (path === "/api/auth/health") {
-        return jsonResponse({ status: "ok" });
+        return jsonResponse({ status: "ok", service: "auth" });
       }
 
       const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+
+      // =============================================
+      // ME (verify token, return current user)
+      // =============================================
+      if (path === "/api/auth/me" && method === "GET") {
+        const user = await authUser(request, env);
+        if (!user) return jsonResponse({ error: "Unauthorized" }, 401);
+        if (user.banned) return jsonResponse({ error: "Account banned" }, 403);
+        return jsonResponse({ user });
+      }
+
+      // =============================================
+      // ADMIN: STATS
+      // =============================================
+      if (path === "/api/auth/admin/stats" && method === "GET") {
+        const admin = await adminOnly(request, env);
+        if (!admin) return jsonResponse({ error: "Admin only" }, 403);
+
+        const totalUsers = (await env.AUTH_DB.prepare("SELECT COUNT(*) AS c FROM users").first());
+        const bannedUsers = (await env.AUTH_DB.prepare("SELECT COUNT(*) AS c FROM users WHERE status='banned'").first());
+        const todayReg = (await env.AUTH_DB.prepare("SELECT COUNT(*) AS c FROM users WHERE date(created_at)=date('now')").first());
+        const recent = await env.AUTH_DB.prepare(
+          "SELECT * FROM user_activity ORDER BY timestamp DESC LIMIT 20"
+        ).all();
+
+        return jsonResponse({
+          total_users: totalUsers?.c || 0,
+          banned_users: bannedUsers?.c || 0,
+          registered_today: todayReg?.c || 0,
+          recent_activity: recent.results || []
+        });
+      }
+
+      // =============================================
+      // ADMIN: LIST USERS
+      // =============================================
+      if (path === "/api/auth/admin/users" && method === "GET") {
+        const admin = await adminOnly(request, env);
+        if (!admin) return jsonResponse({ error: "Admin only" }, 403);
+
+        const q = url.searchParams.get("q") || "";
+        const limit = Number(url.searchParams.get("limit") || 100);
+        let sql = "SELECT id, email, username, role, status, created_at FROM users";
+        const binds = [];
+        if (q) {
+          sql += " WHERE email LIKE ? OR username LIKE ?";
+          binds.push(`%${q}%`, `%${q}%`);
+        }
+        sql += " ORDER BY created_at DESC LIMIT ?";
+        binds.push(limit);
+
+        const { results } = await env.AUTH_DB.prepare(sql).bind(...binds).all();
+        return jsonResponse(results || []);
+      }
+
+      // =============================================
+      // ADMIN: UPDATE USER (promote / demote / ban / activate)
+      // =============================================
+      if (path.startsWith("/api/auth/admin/users/") && method === "PATCH") {
+        const admin = await adminOnly(request, env);
+        if (!admin) return jsonResponse({ error: "Admin only" }, 403);
+
+        const targetId = Number(path.split("/").pop());
+        if (!targetId) return jsonResponse({ error: "Invalid user id" }, 400);
+        if (targetId === 0 || targetId === admin.id) {
+          return jsonResponse({ error: "Cannot modify this user" }, 403);
+        }
+
+        const body = await request.json().catch(() => ({}));
+        const { role, status } = body;
+
+        const existing = await env.AUTH_DB.prepare("SELECT * FROM users WHERE id=?").bind(targetId).first();
+        if (!existing) return jsonResponse({ error: "User not found" }, 404);
+
+        if (role && !["user", "admin", "seller"].includes(role)) {
+          return jsonResponse({ error: "Invalid role" }, 400);
+        }
+        if (status && !["active", "banned"].includes(status)) {
+          return jsonResponse({ error: "Invalid status" }, 400);
+        }
+
+        const fields = [];
+        const binds = [];
+        if (role) { fields.push("role=?"); binds.push(role); }
+        if (status) { fields.push("status=?"); binds.push(status); }
+        if (!fields.length) return jsonResponse({ error: "Nothing to update" }, 400);
+
+        binds.push(targetId);
+        await env.AUTH_DB.prepare(`UPDATE users SET ${fields.join(", ")} WHERE id=?`).bind(...binds).run();
+        await logActivity(env, admin.id, "admin_user_update", `user:${targetId} ${role ? "role:" + role : ""} ${status ? "status:" + status : ""}`);
+
+        return jsonResponse({ message: "User updated", id: targetId, role: role || existing.role, status: status || existing.status });
+      }
+
+      // =============================================
+      // ADMIN: DELETE USER (permanent ban)
+      // =============================================
+      if (path.startsWith("/api/auth/admin/users/") && method === "DELETE") {
+        const admin = await adminOnly(request, env);
+        if (!admin) return jsonResponse({ error: "Admin only" }, 403);
+
+        const targetId = Number(path.split("/").pop());
+        if (!targetId || targetId === 0 || targetId === admin.id) {
+          return jsonResponse({ error: "Cannot delete this user" }, 403);
+        }
+
+        await env.AUTH_DB.prepare("DELETE FROM users WHERE id=?").bind(targetId).run();
+        await logActivity(env, admin.id, "admin_user_delete", `user:${targetId}`);
+        return jsonResponse({ message: "User deleted", id: targetId });
+      }
 
       // LOGIN
       if (path === "/api/auth/login" && method === "POST") {
@@ -158,17 +290,26 @@ export default {
         if (!results || results.length === 0) return jsonResponse({ error: "User not found" }, 404);
         const user = results[0];
 
+        if (user.status === "banned") {
+          return jsonResponse({ error: "Account banned. Contact support." }, 403);
+        }
+
         const valid = bcrypt.compareSync(password, user.password_hash);
         if (!valid) {
           await logActivity(env, user.id, "login_failed");
           return jsonResponse({ error: "Invalid password" }, 401);
         }
 
-        const access = await jwtSign({ id: user.id, email: user.email, role: "user" }, env.JWT_SECRET, "15m");
-        const refresh = await jwtSign({ id: user.id, email: user.email, role: "user" }, env.JWT_SECRET, "7d");
+        const access = await jwtSign({ id: user.id, email: user.email, role: user.role || "user" }, env.JWT_SECRET, "15m");
+        const refresh = await jwtSign({ id: user.id, email: user.email, role: user.role || "user" }, env.JWT_SECRET, "7d");
         await logActivity(env, user.id, "login_success");
 
-        return jsonResponse({ message: "Login successful", user: { id: user.id, email: user.email, role: "user" }, access_token: access, refresh_token: refresh });
+        return jsonResponse({
+          message: "Login successful",
+          user: { id: user.id, email: user.email, username: user.username, role: user.role || "user" },
+          access_token: access,
+          refresh_token: refresh
+        });
       }
 
       // REGISTER
@@ -191,98 +332,91 @@ export default {
 
         const hash = bcrypt.hashSync(password, 10);
         const insert = await env.AUTH_DB.prepare(
-          "INSERT INTO users(email,username,password_hash,role,created_at) VALUES(?,?,?,?,datetime('now'))"
-        ).bind(email, username, hash, "user").run();
+          "INSERT INTO users(email,username,password_hash,role,status,created_at) VALUES(?,?,?,?,?,datetime('now'))"
+        ).bind(email, username, hash, "user", "active").run();
 
         await logActivity(env, insert.lastInsertRowid, "register");
         return jsonResponse({ message: "Registered successfully", user: { id: insert.lastInsertRowid, email, role: "user" } });
       }
 
       // REFRESH TOKEN
-   if (path === "/api/auth/refresh" && method === "POST") {
-  const body = await request.json().catch(() => ({}));
-  const { refresh_token } = body;
-  if (!refresh_token) {
-    return jsonResponse({ error: "Refresh token required" }, 400);
-  }
+      if (path === "/api/auth/refresh" && method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        const { refresh_token } = body;
+        if (!refresh_token) {
+          return jsonResponse({ error: "Refresh token required" }, 400);
+        }
 
-  const payload = await jwtVerify(refresh_token, env.JWT_SECRET);
-  if (!payload) {
-    return jsonResponse({ error: "Invalid refresh token" }, 401);
-  }
+        const payload = await jwtVerify(refresh_token, env.JWT_SECRET);
+        if (!payload) {
+          return jsonResponse({ error: "Invalid refresh token" }, 401);
+        }
 
-  // ADMIN
-  if (payload.id === 0) {
-    const access = await jwtSign(
-      { id: 0, email: payload.email, role: "admin" },
-      env.JWT_SECRET,
-      "15m"
-    );
-    return jsonResponse({ access_token: access });
-  }
+        if (payload.id === 0) {
+          const access = await jwtSign(
+            { id: 0, email: payload.email, role: "admin" },
+            env.JWT_SECRET,
+            "15m"
+          );
+          return jsonResponse({ access_token: access });
+        }
 
-  // USER (DB SYNC)
-  const { results } = await env.AUTH_DB.prepare(
-    "SELECT id, email, role FROM users WHERE id=?"
-  ).bind(payload.id).all();
+        const { results } = await env.AUTH_DB.prepare(
+          "SELECT id, email, role, status FROM users WHERE id=?"
+        ).bind(payload.id).all();
 
-  if (!results.length) {
-    return jsonResponse({ error: "User not found" }, 404);
-  }
+        if (!results.length) {
+          return jsonResponse({ error: "User not found" }, 404);
+        }
 
-  const user = results[0];
+        const user = results[0];
+        if (user.status === "banned") {
+          return jsonResponse({ error: "Account banned" }, 403);
+        }
 
-  const access = await jwtSign(
-    {
-      id: user.id,
-      email: user.email,
-      role: user.role   // 🔥 DB ROLE
-    },
-    env.JWT_SECRET,
-    "15m"
-  );
+        const access = await jwtSign(
+          { id: user.id, email: user.email, role: user.role || "user" },
+          env.JWT_SECRET,
+          "15m"
+        );
 
-  return jsonResponse({ access_token: access });
-}
+        return jsonResponse({ access_token: access });
+      }
 
+      // FORGOT PASSWORD (send OTP)
+      if (path === "/api/auth/forgot-password" && method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        const { email } = body;
+        if (!email) return jsonResponse({ error: "Email required" }, 400);
 
+        if (!await checkRateLimit(env, `email:otp:${email}`, 3, 15)) {
+          return jsonResponse({ error: "Too many OTP requests. Try later." }, 429);
+        }
 
-// FORGOT PASSWORD (send OTP)
-if (path === "/api/auth/forgot-password" && method === "POST") {
-  const body = await request.json().catch(() => ({}));
-  const { email } = body;
-  if (!email) return jsonResponse({ error: "Email required" }, 400);
+        const { results } = await env.AUTH_DB.prepare(
+          "SELECT id FROM users WHERE email=?"
+        ).bind(email).all();
 
-  if (!await checkRateLimit(env, `email:otp:${email}`, 3, 15)) {
-    return jsonResponse({ error: "Too many OTP requests. Try later." }, 429);
-  }
+        if (!results || results.length === 0)
+          return jsonResponse({ message: "If email exists, OTP sent" });
 
-  const { results } = await env.AUTH_DB.prepare(
-    "SELECT id FROM users WHERE email=?"
-  ).bind(email).all();
+        const userId = results[0].id;
+        const otp = generateOTP();
+        const expiry = new Date(Date.now() + 10 * 60000).toISOString();
 
-  if (!results || results.length === 0) 
-    return jsonResponse({ message: "If email exists, OTP sent" });
+        await env.AUTH_DB.prepare(
+          "INSERT INTO password_resets(user_id,otp,expires_at) VALUES(?,?,?)"
+        ).bind(userId, otp, expiry).run();
 
-  const userId = results[0].id;
-  const otp = generateOTP();
-  const expiry = new Date(Date.now() + 10 * 60000).toISOString();
+        try {
+          await sendOtpEmail(email, otp, env);
+        } catch (e) {
+          console.error("OTP send failed:", e);
+          return jsonResponse({ error: "Email service failed" }, 500);
+        }
 
-  await env.AUTH_DB.prepare(
-    "INSERT INTO password_resets(user_id,otp,expires_at) VALUES(?,?,?)"
-  ).bind(userId, otp, expiry).run();
-
-  // ✅ Try-catch added here
-  try {
-    await sendOtpEmail(email, otp, env);
-  } catch (e) {
-    console.error("❌ OTP send failed:", e);
-    return jsonResponse({ error: "Email service failed" }, 500);
-  }
-
-  return jsonResponse({ message: "OTP sent to email" });
-}
-
+        return jsonResponse({ message: "OTP sent to email" });
+      }
 
       // RESET PASSWORD (using OTP)
       if (path === "/api/auth/reset-password" && method === "POST") {
