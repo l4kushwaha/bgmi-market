@@ -267,7 +267,7 @@ export default {
         const { email, password } = body;
         if (!email || !password) return jsonResponse({ error: "Email & password required" }, 400);
 
-        if (!await checkRateLimit(env, `ip:login:${ip}`, 5, 15)) {
+        if (!await checkRateLimit(env, `ip:login:${ip}`, 20, 60)) {
           return jsonResponse({ error: "Too many login attempts. Try later." }, 429);
         }
 
@@ -320,7 +320,7 @@ export default {
 
         if (TEMP_DOMAINS.some(d => email.endsWith(d))) return jsonResponse({ error: "Disposable email not allowed" }, 400);
 
-        if (!await checkRateLimit(env, `ip:register:${ip}`, 3, 60)) {
+        if (!await checkRateLimit(env, `ip:register:${ip}`, 10, 60)) {
           return jsonResponse({ error: "Too many attempts. Try later." }, 429);
         }
 
@@ -339,8 +339,9 @@ export default {
           "INSERT INTO users(email,username,password_hash,role,status,created_at) VALUES(?,?,?,?,?,datetime('now'))"
         ).bind(email, username, hash, role, "active").run();
 
-        await logActivity(env, insert.lastInsertRowid, "register");
-        return jsonResponse({ message: "Registered successfully", user: { id: insert.lastInsertRowid, email, role } });
+        const newId = insert.meta?.last_row_id ?? insert.lastInsertRowid;
+        await logActivity(env, newId, "register");
+        return jsonResponse({ message: "Registered successfully", user: { id: newId, email, role } });
       }
 
       // REFRESH TOKEN

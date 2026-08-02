@@ -25,6 +25,11 @@ export default {
       const method = req.method;
       const db = env.chat_db;
 
+      /* ================= HEALTH ================= */
+      if (path === "/health" || path === "/api/chat/health") {
+        return json({ service: "chat", version: "1.1.1", status: "running" });
+      }
+
       /* ================= HELPERS ================= */
       const uuid = () => crypto.randomUUID();
 

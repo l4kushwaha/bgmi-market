@@ -70,18 +70,29 @@ const SERVICE_HEALTH = {
   chat: "/health",
 };
 
-async function fetchWithForward(request, targetUrl) {
-  const headers = new Headers(request.headers);
-  headers.delete("host");
-  headers.delete("content-length");
+// Prefer Cloudflare service bindings (reliable worker-to-worker),
+// fall back to plain fetch of the [vars] URLs.
+const BINDING = {
+  auth: "AUTH_SERVICE",
+  market: "MARKET_SERVICE",
+  wallet: "WALLET_SERVICE",
+  verify: "VERIFY_SERVICE",
+  chat: "CHAT_SERVICE",
+};
 
-  const init = { method: request.method, headers, redirect: "manual" };
+function serviceFetch(env, name, url, init) {
+  const binding = BINDING[name] ? env[BINDING[name]] : null;
+  if (binding && typeof binding.fetch === "function") return binding.fetch(url, init);
+  return fetch(url, init);
+}
 
-  if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
-    init.body = await request.arrayBuffer().catch(() => null);
-  }
+async function fetchWithForward(request, env, serviceName, targetUrl) {
+  const proxy = new Request(targetUrl, request);
+  proxy.headers.delete("host");
+  proxy.headers.delete("content-length");
 
-  const doFetch = async () => fetch(targetUrl, init);
+  const doFetch = async () =>
+    serviceFetch(env, serviceName, proxy.clone(), { redirect: "manual" });
   try {
     const resp = await doFetch();
     if (resp.status >= 500) {
@@ -97,10 +108,10 @@ async function fetchWithForward(request, targetUrl) {
   }
 }
 
-async function serviceHealthCheck(name, url) {
+async function serviceHealthCheck(env, name, url) {
   const path = SERVICE_HEALTH[name] || "/health";
   try {
-    const res = await fetch(`${url.replace(/\/+$/, "")}${path}`, { cf: { cacheTtl: 0 } });
+    const res = await serviceFetch(env, name, `${url.replace(/\/+$/, "")}${path}`, { cf: { cacheTtl: 0 } });
     const body = await res.json().catch(() => ({}));
     return { service: name, status: res.ok ? "running" : "down", url, path, details: body };
   } catch (e) {
@@ -111,7 +122,7 @@ async function serviceHealthCheck(name, url) {
 async function allServicesHealth(env) {
   const services = buildServiceUrls(env);
   const results = await Promise.allSettled(
-    Object.entries(services).map(([n, u]) => serviceHealthCheck(n, u))
+    Object.entries(services).map(([n, u]) => serviceHealthCheck(env, n, u))
   );
   return Object.fromEntries(
     Object.keys(services).map((name, i) => {
@@ -192,7 +203,7 @@ export default {
       const targetUrl = `${base.replace(/\/+$/, "")}${targetPath}${url.search}`;
 
       try {
-        const proxied = await fetchWithForward(request, targetUrl);
+        const proxied = await fetchWithForward(request, env, service, targetUrl);
         const text = await proxied.clone().text().catch(() => "");
         const contentType = proxied.headers.get("content-type") || "";
 

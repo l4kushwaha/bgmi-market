@@ -174,7 +174,7 @@ export default {
         if (!user || user.role !== "admin") return json({ error: "admin_only" }, 403);
 
         const { results } = await VERIFICATION_DB.prepare(
-          `SELECT k.*, u.name, u.email FROM kyc_documents k
+          `SELECT k.*, u.name FROM kyc_documents k
            LEFT JOIN user_profiles u ON u.user_id=k.user_id
            WHERE k.verification_status='submitted'
            ORDER BY k.created_at DESC LIMIT 100`

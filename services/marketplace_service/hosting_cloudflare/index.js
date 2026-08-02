@@ -189,7 +189,7 @@ export default {
           JSON.stringify(b.images || [])
         ).run();
 
-        return sendJSON({ message: "Listing created", id: insert.lastInsertRowid });
+        return sendJSON({ message: "Listing created", id: insert.meta?.last_row_id ?? insert.lastInsertRowid });
       }
 
       /* ================= EDIT LISTING ================= */
@@ -276,7 +276,7 @@ export default {
         return sendJSON({
           message: "Purchase created",
           purchase: {
-            id: insert.lastInsertRowid,
+            id: insert.meta?.last_row_id ?? insert.lastInsertRowid,
             listing_id: b.listing_id,
             seller_id: String(listing.seller_id),
             price: listing.price

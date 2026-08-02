@@ -333,10 +333,26 @@ export default {
         const paid = await db.prepare(`
           SELECT COALESCE(SUM(total_amount),0) AS total FROM service_payments WHERE status='paid'
         `).first();
+        const pending = await db.prepare(`
+          SELECT COUNT(*) AS c, COALESCE(SUM(total_amount),0) AS total
+          FROM service_payments WHERE status='created'
+        `).first();
+        const released = await db.prepare(`
+          SELECT COALESCE(SUM(amount),0) AS total FROM seller_earnings WHERE status='released'
+        `).first();
+        const withdraw = await db.prepare(`
+          SELECT COUNT(*) AS c, COALESCE(SUM(amount),0) AS total
+          FROM withdraw_requests WHERE status='pending'
+        `).first();
 
         return json({
           total_admin_fees: total?.total || 0,
-          total_volume: paid?.total || 0
+          total_volume: paid?.total || 0,
+          total_released: released?.total || 0,
+          pending_payments: pending?.c || 0,
+          pending_amount: pending?.total || 0,
+          pending_withdrawals: withdraw?.c || 0,
+          pending_withdrawal_amount: withdraw?.total || 0
         });
       }
 
@@ -349,6 +365,70 @@ export default {
 
         const { results } = await db.prepare(`
           SELECT * FROM service_payments ORDER BY created_at DESC LIMIT 200
+        `).all();
+
+        return json(results || []);
+      }
+
+      /* ==============================================
+         ADMIN: WITHDRAWAL QUEUE
+         ============================================== */
+      if (path === "/admin/withdrawals" && method === "GET") {
+        const admin = await adminOnly();
+        if (!admin) return json({ error: "admin_only" }, 403);
+
+        const status = url.searchParams.get("status") || "";
+        const { results } = status
+          ? await db.prepare(`SELECT * FROM withdraw_requests WHERE status=? ORDER BY created_at DESC LIMIT 200`).bind(status).all()
+          : await db.prepare(`SELECT * FROM withdraw_requests ORDER BY created_at DESC LIMIT 200`).all();
+
+        return json(results || []);
+      }
+
+      /* ==============================================
+         ADMIN: PROCESS WITHDRAWAL
+         ============================================== */
+      if (path.startsWith("/admin/withdrawals/") && method === "POST") {
+        const admin = await adminOnly();
+        if (!admin) return json({ error: "admin_only" }, 403);
+
+        const parts = path.split("/");
+        const id = Number(parts[3]);
+        const action = parts[4];
+        if (!id || !["process", "reject"].includes(action)) {
+          return json({ error: "invalid_request" }, 400);
+        }
+
+        const wd = await db.prepare(`SELECT * FROM withdraw_requests WHERE id=?`).bind(id).first();
+        if (!wd) return json({ error: "withdraw_request_not_found" }, 404);
+        if (wd.status !== "pending") return json({ error: "already_processed" }, 409);
+
+        const newStatus = action === "process" ? "processed" : "rejected";
+        await db.prepare(`UPDATE withdraw_requests SET status=? WHERE id=?`)
+          .bind(newStatus, id).run();
+
+        return json({
+          message: `Withdrawal ${newStatus}`,
+          id: wd.id,
+          seller_id: wd.seller_id,
+          amount: wd.amount,
+          status: newStatus
+        });
+      }
+
+      /* ==============================================
+         ADMIN: SELLER EARNINGS OVERVIEW
+         ============================================== */
+      if (path === "/admin/balances" && method === "GET") {
+        const admin = await adminOnly();
+        if (!admin) return json({ error: "admin_only" }, 403);
+
+        const { results } = await db.prepare(`
+          SELECT seller_id,
+                 COALESCE(SUM(CASE WHEN status='released' THEN amount ELSE 0 END),0) AS released,
+                 COALESCE(SUM(CASE WHEN status='held' THEN amount ELSE 0 END),0) AS held,
+                 COUNT(CASE WHEN status='released' THEN 1 END) AS payouts
+          FROM seller_earnings GROUP BY seller_id ORDER BY released DESC LIMIT 100
         `).all();
 
         return json(results || []);

@@ -18,6 +18,30 @@ WALLET_SERVICE_URL = "https://bgmi-marketplace.bgmi-gateway.workers.dev"
 VERIFY_SERVICE_URL = "https://verification_service.bgmi-gateway.workers.dev"
 CHAT_SERVICE_URL = "https://bgmi_chat_service.bgmi-gateway.workers.dev"
 
+# ============================================================
+# Service bindings (reliable worker-to-worker calls).
+# Falls back to the [vars] URLs if a binding is missing.
+# ============================================================
+[[services]]
+binding = "AUTH_SERVICE"
+service = "auth-service"
+
+[[services]]
+binding = "MARKET_SERVICE"
+service = "bgmi_marketplace_service"
+
+[[services]]
+binding = "WALLET_SERVICE"
+service = "bgmi-marketplace"
+
+[[services]]
+binding = "VERIFY_SERVICE"
+service = "verification_service"
+
+[[services]]
+binding = "CHAT_SERVICE"
+service = "bgmi_chat_service"
+
 # Secrets (set via `wrangler secret put`, never commit):
 #   JWT_SECRET       – shared signing secret (identical across all workers)
 #   ADMIN_EMAIL      – admin login email
