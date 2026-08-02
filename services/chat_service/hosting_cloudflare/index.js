@@ -35,6 +35,11 @@ async function cleanup(env, db) {
     "DELETE FROM chat_rooms WHERE status='closed' AND closed_at IS NOT NULL AND closed_at < ?"
   ).bind(rCut).run();
 
+  // 4. purani ended/missed calls (cascade → call_events)
+  await db.prepare(
+    "DELETE FROM calls WHERE status IN ('ended','missed') AND created_at < ?"
+  ).bind(rCut).run();
+
   return { deleted: true };
 }
 
@@ -122,6 +127,10 @@ export default {
         const { payload } = jwt.decode(token);
         return payload;
       }
+
+      const safeCallPayload = (raw) => {
+        try { return JSON.parse(raw); } catch { return null; }
+      };
 
       /* ======================================================
          CREATE CHAT / BUY REQUEST
@@ -513,6 +522,131 @@ if (path === "/api/chat/room" && method === "GET") {
             "Content-Disposition": "inline"
           }
         });
+      }
+
+      /* ======================================================
+         📞 CALLING SYSTEM (WebRTC signaling relay)
+         ====================================================== */
+      if (path === "/api/chat/call/start" && method === "POST") {
+        const user = await auth();
+        if (!user) return json({ error: "unauthorized" }, 401);
+
+        const body = await req.json();
+        const room_id = body.room_id;
+        const kind = body.kind === "video" ? "video" : "audio";
+
+        const room = await db.prepare(
+          "SELECT buyer_id, seller_user_id, status FROM chat_rooms WHERE id=?"
+        ).bind(room_id).first();
+        if (!room) return json({ error: "room_not_found" }, 404);
+        if (![room.buyer_id, room.seller_user_id].includes(String(user.id))) {
+          return json({ error: "forbidden" }, 403);
+        }
+        if (!["approved", "half_paid"].includes(room.status)) {
+          return json({ error: "chat_not_active" }, 409);
+        }
+
+        const callee_id = String(user.id) === String(room.buyer_id)
+          ? room.seller_user_id : room.buyer_id;
+
+        const active = await db.prepare(
+          "SELECT id FROM calls WHERE room_id=? AND status IN ('ringing','connected') LIMIT 1"
+        ).bind(room_id).first();
+        if (active) return json({ error: "call_already_active", call_id: active.id }, 409);
+
+        const call_id = uuid();
+        await db.prepare(`
+          INSERT INTO calls (id, room_id, caller_id, callee_id, kind, status, created_at)
+          VALUES (?, ?, ?, ?, ?, 'ringing', CURRENT_TIMESTAMP)
+        `).bind(call_id, room_id, String(user.id), callee_id, kind).run();
+
+        return json({ call_id, kind, callee_id, status: "ringing" });
+      }
+
+      if (path === "/api/chat/call/event" && method === "POST") {
+        const user = await auth();
+        if (!user) return json({ error: "unauthorized" }, 401);
+
+        const body = await req.json();
+        const { call_id, type, payload } = body;
+        if (!call_id || !["offer", "answer", "ice", "hangup"].includes(type)) {
+          return json({ error: "invalid_payload" }, 400);
+        }
+
+        const call = await db.prepare("SELECT room_id, caller_id, callee_id FROM calls WHERE id=?").bind(call_id).first();
+        if (!call) return json({ error: "call_not_found" }, 404);
+        if (![call.caller_id, call.callee_id].includes(String(user.id))) {
+          return json({ error: "forbidden" }, 403);
+        }
+
+        const to_id = String(user.id) === String(call.caller_id) ? call.callee_id : call.caller_id;
+        await db.prepare(`
+          INSERT INTO call_events (call_id, from_id, to_id, type, payload, created_at)
+          VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        `).bind(call_id, String(user.id), to_id, type, JSON.stringify(payload || null)).run();
+
+        return json({ status: "stored", call_id });
+      }
+
+      if (path === "/api/chat/call/poll" && method === "GET") {
+        const user = await auth();
+        if (!user) return json({ error: "unauthorized" }, 401);
+
+        const room_id = url.searchParams.get("room_id");
+        const since = Number(url.searchParams.get("since") || 0);
+        const room = await db.prepare(
+          "SELECT buyer_id, seller_user_id FROM chat_rooms WHERE id=?"
+        ).bind(room_id).first();
+        if (!room) return json({ error: "room_not_found" }, 404);
+        if (![room.buyer_id, room.seller_user_id].includes(String(user.id))) {
+          return json({ error: "forbidden" }, 403);
+        }
+
+        const call = await db.prepare(`
+          SELECT * FROM calls WHERE room_id=? AND status IN ('ringing','connected')
+          ORDER BY created_at DESC LIMIT 1
+        `).bind(room_id).first();
+
+        const events = await db.prepare(`
+          SELECT * FROM call_events WHERE call_id=? AND to_id=? AND id>?
+          ORDER BY id ASC
+        `).bind(call ? call.id : "", String(user.id), since).all();
+
+        return json({
+          call: call ? { id: call.id, caller_id: call.caller_id, callee_id: call.callee_id, kind: call.kind, status: call.status } : null,
+          events: (events.results || []).map(e => ({
+            id: e.id,
+            type: e.type,
+            payload: safeCallPayload(e.payload)
+          }))
+        });
+      }
+
+      if (path === "/api/chat/call/state" && method === "POST") {
+        const user = await auth();
+        if (!user) return json({ error: "unauthorized" }, 401);
+
+        const body = await req.json();
+        const { call_id, status } = body;
+        if (!call_id || !["ringing", "connected", "ended", "missed"].includes(status)) {
+          return json({ error: "invalid_payload" }, 400);
+        }
+
+        const call = await db.prepare(
+          "SELECT caller_id, callee_id, status AS cur FROM calls WHERE id=?"
+        ).bind(call_id).first();
+        if (!call) return json({ error: "call_not_found" }, 404);
+        if (![call.caller_id, call.callee_id].includes(String(user.id))) {
+          return json({ error: "forbidden" }, 403);
+        }
+
+        const setConnected = status === "connected" || (status === "ringing" && call.cur === "ringing");
+        await db.prepare(`
+          UPDATE calls SET status=?, ended_at=CASE WHEN ? IN ('ended','missed') THEN CURRENT_TIMESTAMP ELSE ended_at END
+          WHERE id=?
+        `).bind(status, status, call_id).run();
+
+        return json({ status, call_id });
       }
 
       /* ======================================================

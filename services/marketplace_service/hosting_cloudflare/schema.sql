@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS listings (
   uid TEXT NOT NULL,                     -- PUBG UID
   title TEXT NOT NULL,
   description TEXT,
+  category TEXT DEFAULT 'account',       -- account / popularity
+  points INTEGER DEFAULT 0,              -- popularity points (when category=popularity)
   price REAL DEFAULT 0,
   level INTEGER DEFAULT 0,
   highest_rank TEXT,
@@ -138,6 +140,33 @@ CREATE TABLE IF NOT EXISTS chat_links (
 );
 
 -- ========================================================
+-- ⭐ POPULARITY TABLE (per-user popularity points ledger)
+-- ========================================================
+CREATE TABLE IF NOT EXISTS popularity (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  points INTEGER DEFAULT 0,
+  source TEXT DEFAULT 'purchase',       -- purchase / admin / bonus
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- ========================================================
+-- ✅ SELLER VERIFICATION REQUESTS TABLE
+-- ========================================================
+CREATE TABLE IF NOT EXISTS seller_verifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  status TEXT DEFAULT 'pending',        -- pending / approved / rejected
+  badge TEXT,                           -- badge to grant on approval
+  reason TEXT,
+  reviewed_by TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  reviewed_at TEXT,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- ========================================================
 -- ⚡ INDEXES
 -- ========================================================
 CREATE INDEX IF NOT EXISTS idx_listings_seller_id ON listings(seller_id);
@@ -149,3 +178,5 @@ CREATE INDEX IF NOT EXISTS idx_purchases_seller_id ON purchases(seller_id);
 CREATE INDEX IF NOT EXISTS idx_purchases_listing_id ON purchases(listing_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_seller_id ON transaction_logs(seller_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_buyer_id ON transaction_logs(buyer_id);
+CREATE INDEX IF NOT EXISTS idx_popularity_user_id ON popularity(user_id);
+CREATE INDEX IF NOT EXISTS idx_seller_verify_user_id ON seller_verifications(user_id, status);

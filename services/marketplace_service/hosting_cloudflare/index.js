@@ -86,6 +86,8 @@ export default {
 
     const normalize = r => ({
       ...r,
+      category: r.category || "account",
+      points: r.points || 0,
       mythic_items: safeJSON(r.mythic_items),
       legendary_items: safeJSON(r.legendary_items),
       honor_gift: safeJSON(r.honor_gift ?? r.gift_items),
@@ -144,11 +146,17 @@ export default {
         const binds = [];
         const search = url.searchParams.get("q");
         const filter = url.searchParams.get("filter");
+        const category = url.searchParams.get("category");
         const user = await verifyJWT(request);
 
         if (search) {
           q += " AND (title LIKE ? OR uid LIKE ? OR highest_rank LIKE ?)";
           binds.push(`%${search}%`, `%${search}%`, `%${search}%`);
+        }
+
+        if (category && (category === "account" || category === "popularity")) {
+          q += " AND category=?";
+          binds.push(category);
         }
 
         if (filter === "own" && user) {
@@ -191,6 +199,7 @@ export default {
           return sendJSON({ error: "uid, title & price required" }, 400);
         }
 
+        const category = b.category === "popularity" ? "popularity" : "account";
         const cleanUid = String(b.uid).replace(/[^0-9]/g, "").slice(0, 12);
         if (!/^[0-9]{1,12}$/.test(cleanUid)) return sendJSON({ error: "Invalid UID" }, 400);
         const cleanTitle = String(b.title).replace(/[<>&'"`]/g, "").trim().slice(0, 80);
@@ -199,20 +208,26 @@ export default {
         if (!Number.isFinite(price) || price < 1 || price > 10000000) {
           return sendJSON({ error: "Price must be between ₹1 and ₹10,000,000" }, 400);
         }
+        const points = category === "popularity" ? (Number(b.points) || 0) : 0;
+        if (category === "popularity" && (points < 1 || points > 10000000)) {
+          return sendJSON({ error: "Popularity points must be between 1 and 10,000,000" }, 400);
+        }
         const cleanDesc = String(b.description || "").replace(/[<>&'"`]/g, "").trim().slice(0, 1000);
 
         const insert = await db.prepare(
           `INSERT INTO listings
-          (seller_id,uid,title,description,price,level,highest_rank,
+          (seller_id,uid,title,description,category,points,price,level,highest_rank,
            mythic_items,legendary_items,honor_gift,upgraded_guns,titles,
            x_suit,supercar,ultimate,images,
            status,avg_rating,review_count,seller_verified)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'available',0,0,0)`
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'available',0,0,0)`
         ).bind(
           String(user.id),
           cleanUid,
           cleanTitle,
           cleanDesc,
+          category,
+          points,
           price,
           b.level || 0,
           b.highest_rank || "",
@@ -318,6 +333,14 @@ export default {
            VALUES (?,?,?,?,'pending','awaiting',datetime('now'),datetime('now'))`
         ).bind(b.listing_id, String(user.id), String(listing.seller_id), listing.price).run();
 
+        // Popularity listing purchased → credit buyer's popularity points
+        if (listing.category === "popularity" && listing.points > 0) {
+          await db.prepare(
+            `INSERT INTO popularity (user_id, points, source, created_at)
+             VALUES (?, ?, 'purchase', datetime('now'))`
+          ).bind(String(user.id), listing.points).run();
+        }
+
         return sendJSON({
           message: "Purchase created",
           purchase: {
@@ -387,6 +410,142 @@ export default {
         ).bind(Number(sellerAgg.avg || 0).toFixed(1), sellerAgg.cnt, sellerAgg.cnt, String(listing.seller_id)).run();
 
         return sendJSON({ message: "Review submitted", rating: stars });
+      }
+
+      /* ================= MY POPULARITY ================= */
+      if (path === "/api/popularity/me" && method === "GET") {
+        const user = await verifyJWT(request);
+        if (!user) return sendJSON({ error: "Unauthorized" }, 401);
+
+        const total = await db.prepare(
+          "SELECT COALESCE(SUM(points),0) AS total FROM popularity WHERE user_id=?"
+        ).bind(String(user.id)).first();
+        const history = await db.prepare(
+          "SELECT id, points, source, created_at FROM popularity WHERE user_id=? ORDER BY created_at DESC LIMIT 50"
+        ).bind(String(user.id)).all();
+
+        return sendJSON({ user_id: String(user.id), total: total?.total || 0, history: history.results || [] });
+      }
+
+      /* ================= POPULARITY LEADERBOARD ================= */
+      if (path === "/api/popularity/leaderboard" && method === "GET") {
+        const limit = Math.min(Number(url.searchParams.get("limit") || 10), 50);
+        const { results } = await db.prepare(`
+          SELECT p.user_id, SUM(p.points) AS total_points,
+                 COUNT(DISTINCT p.id) AS boosts
+          FROM popularity p
+          GROUP BY p.user_id
+          ORDER BY total_points DESC
+          LIMIT ?
+        `).bind(limit).all();
+
+        return sendJSON((results || []).map((r, i) => ({
+          rank: i + 1,
+          user_id: r.user_id,
+          total_points: Number(r.total_points || 0),
+          boosts: Number(r.boosts || 0)
+        })));
+      }
+
+      /* ================= SELLER VERIFICATION ================= */
+      if (path === "/api/seller/verify-request" && method === "POST") {
+        const user = await verifyJWT(request);
+        if (!user) return sendJSON({ error: "Unauthorized" }, 401);
+        if (!rate(`verify:${user.id}`, 1, 60000)) {
+          return sendJSON({ error: "Too many requests. Try later." }, 429);
+        }
+        await ensureSeller(user.id);
+
+        const existing = await db.prepare(
+          "SELECT id, status, badge FROM seller_verifications WHERE user_id=? AND status='pending' LIMIT 1"
+        ).bind(String(user.id)).first();
+        if (existing) {
+          return sendJSON({ message: "Request already pending", request: existing, already_pending: true });
+        }
+
+        const badge = ["trusted", "gold", "diamond"].includes(String(user.role)) ? String(user.role) : "trusted";
+        const insert = await db.prepare(
+          `INSERT INTO seller_verifications (user_id, status, badge, created_at)
+           VALUES (?, 'pending', ?, datetime('now'))`
+        ).bind(String(user.id), badge).run();
+
+        return sendJSON({ message: "Verification request submitted", id: insert.meta?.last_row_id ?? insert.lastInsertRowid, badge });
+      }
+
+      if (path === "/api/seller/verify-status" && method === "GET") {
+        const user = await verifyJWT(request);
+        if (!user) return sendJSON({ error: "Unauthorized" }, 401);
+
+        const req = await db.prepare(
+          `SELECT id, status, badge, reason, created_at, reviewed_at
+           FROM seller_verifications WHERE user_id=? ORDER BY created_at DESC LIMIT 1`
+        ).bind(String(user.id)).first();
+
+        const seller = await db.prepare(
+          "SELECT badge, status FROM sellers WHERE CAST(user_id AS TEXT)=?"
+        ).bind(String(user.id)).first();
+
+        return sendJSON({
+          request: req || null,
+          badge: seller?.badge || "new",
+          verified: !!seller && seller.badge !== "new"
+        });
+      }
+
+      /* ================= ADMIN: VERIFICATION QUEUE ================= */
+      if (path === "/api/admin/seller-verifications" && method === "GET") {
+        const user = await verifyJWT(request);
+        if (!user || user.role !== "admin") return sendJSON({ error: "Admin only" }, 403);
+
+        const status = url.searchParams.get("status") || "";
+        let q = "SELECT * FROM seller_verifications";
+        const binds = [];
+        if (status) { q += " WHERE status=?"; binds.push(status); }
+        q += " ORDER BY created_at DESC LIMIT 200";
+        const { results } = await db.prepare(q).bind(...binds).all();
+        return sendJSON(results || []);
+      }
+
+      /* ================= ADMIN: VERIFY DECISION ================= */
+      if (path.startsWith("/api/admin/seller-verifications/") && method === "POST") {
+        const user = await verifyJWT(request);
+        if (!user || user.role !== "admin") return sendJSON({ error: "Admin only" }, 403);
+
+        const id = Number(path.split("/").pop());
+        const b = await request.json().catch(() => ({}));
+        const action = b.action || b.decision; // approve / reject
+        if (!["approve", "reject"].includes(action)) {
+          return sendJSON({ error: "Invalid action" }, 400);
+        }
+
+        const req = await db.prepare("SELECT * FROM seller_verifications WHERE id=?").bind(id).first();
+        if (!req) return sendJSON({ error: "Request not found" }, 404);
+        if (req.status !== "pending") return sendJSON({ error: "Already reviewed" }, 409);
+
+        const finalStatus = action === "approve" ? "approved" : "rejected";
+
+        await db.prepare(
+          `UPDATE seller_verifications SET status=?, reason=?, reviewed_by=?, reviewed_at=datetime('now') WHERE id=?`
+        ).bind(finalStatus, b.reason || "", String(user.id), id).run();
+
+        if (action === "approve") {
+          const badge = b.badge || req.badge || "trusted";
+          await db.prepare(
+            `UPDATE sellers SET badge=?, status='active', updated_at=datetime('now')
+             WHERE CAST(user_id AS TEXT)=?`
+          ).bind(badge, String(req.user_id)).run();
+
+          const seller = await db.prepare(
+            "SELECT * FROM sellers WHERE CAST(user_id AS TEXT)=?"
+          ).bind(String(req.user_id)).first();
+          if (!seller) {
+            await db.prepare(
+              "INSERT INTO sellers (user_id, stars, review_count, badge, status, total_sales, total_revenue) VALUES (?,0,0,?, 'active',0,0)"
+            ).bind(String(req.user_id), badge).run();
+          }
+        }
+
+        return sendJSON({ message: `Verification ${finalStatus}`, id });
       }
 
       /* ================= ADMIN: ALL LISTINGS ================= */
