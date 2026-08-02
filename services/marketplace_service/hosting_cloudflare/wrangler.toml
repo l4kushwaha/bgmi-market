@@ -1,12 +1,12 @@
 # =====================================================
-# ⚙️ BGMI Marketplace Service (Cloudflare Worker)
+# BGMI Marketplace Service (Cloudflare Worker)
 # =====================================================
 name = "bgmi_marketplace_service"
 main = "index.js"
 compatibility_date = "2025-11-12"
 
 # =====================================================
-# 💾 D1 DATABASE BINDING
+# D1 DATABASE BINDING
 # =====================================================
 [[d1_databases]]
 binding = "marketplace_db"
@@ -14,44 +14,36 @@ database_name = "bgmi_marketplace_db"
 database_id = "71eff31d-c376-4bb5-aa6e-edc2fe5d1afa"
 
 # =====================================================
-# 🌍 CORE SERVICE ENVIRONMENT VARIABLES
+# CORE SERVICE ENVIRONMENT VARIABLES
 # =====================================================
 [vars]
-JWT_SECRET = "supersecretkey"
-ADMIN_PASSWORD = "ELEGENT1832"
-ADMIN_EMAIL = "L4kushwaha@gmail.com"
-ADMIN_PHONE = "7905584212"
 SERVICE_NAME = "marketplace_service"
 SERVICE_VERSION = "1.1.1"
 
 AUTH_SERVICE_URL   = "https://auth-service.bgmi-gateway.workers.dev/api/auth"
 CHAT_SERVICE_URL   = "https://bgmi_chat_service.bgmi-gateway.workers.dev/api"
-WALLET_SERVICE_URL = "https://bgmi_wallet_service.bgmi-gateway.workers.dev/api"
-ADMIN_SERVICE_URL  = "https://bgmi_admin_service.bgmi-gateway.workers.dev/api"
+WALLET_SERVICE_URL = "https://bgmi-marketplace.bgmi-gateway.workers.dev/api"
 
 WALLET_ESCROW_ENABLED = "true"
 CHAT_NOTIFICATIONS_ENABLED = "true"
-ADMIN_MONITORING_ENABLED = "true"
+
+# Secrets (set via `wrangler secret put bgmi_marketplace_service <NAME>`, never commit):
+#   JWT_SECRET – shared signing secret (identical across all workers)
 
 # =====================================================
-# 📊 OBSERVABILITY
+# OBSERVABILITY
 # =====================================================
 [observability.logs]
 enabled = true
 
 # =====================================================
-# 🚀 ROUTE CONFIGURATION
-# =====================================================
-route = "bgmi-marketplace-service.l4kushwaha.workers.dev/*"
-
-# =====================================================
-# 🧱 BUILD CONFIGURATION
+# BUILD CONFIGURATION
 # =====================================================
 [build]
-command = "npm install && echo 🚀 Deploying BGMI Marketplace Service..."
+command = "npm install"
 
 # =====================================================
-# 🌐 ENVIRONMENTS
+# ENVIRONMENTS
 # =====================================================
 [env.local.vars]
 ENVIRONMENT = "local"
@@ -65,21 +57,15 @@ database_id = "71eff31d-c376-4bb5-aa6e-edc2fe5d1afa"
 [env.production.vars]
 ENVIRONMENT = "production"
 DEBUG = "false"
-JWT_SECRET = "supersecretkey"
-ADMIN_PASSWORD = "ELEGENT1832"
-ADMIN_EMAIL = "L4kushwaha@gmail.com"
-ADMIN_PHONE = "7905584212"
 SERVICE_NAME = "marketplace_service"
 SERVICE_VERSION = "1.1.1"
 
 AUTH_SERVICE_URL   = "https://auth-service.bgmi-gateway.workers.dev/api/auth"
 CHAT_SERVICE_URL   = "https://bgmi_chat_service.bgmi-gateway.workers.dev/api"
-WALLET_SERVICE_URL = "https://bgmi_wallet_service.bgmi-gateway.workers.dev/api"
-ADMIN_SERVICE_URL  = "https://bgmi_admin_service.bgmi-gateway.workers.dev/api"
+WALLET_SERVICE_URL = "https://bgmi-marketplace.bgmi-gateway.workers.dev/api"
 
 WALLET_ESCROW_ENABLED = "true"
 CHAT_NOTIFICATIONS_ENABLED = "true"
-ADMIN_MONITORING_ENABLED = "true"
 
 [[env.production.d1_databases]]
 binding = "marketplace_db"
@@ -87,10 +73,6 @@ database_name = "bgmi_marketplace_db"
 database_id = "71eff31d-c376-4bb5-aa6e-edc2fe5d1afa"
 
 # =====================================================
-# 📝 NOTES:
-# =====================================================
-# ✅ Deploy to production:
-#     npx wrangler deploy --env production
-# ✅ Health check:
-#     https://bgmi-marketplace-service.l4kushwaha.workers.dev/api/health
+# Deploy:  npx wrangler deploy --env production
+# Health:  https://bgmi_marketplace_service.bgmi-gateway.workers.dev/api/health
 # =====================================================

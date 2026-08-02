@@ -1,0 +1,27 @@
+# ---- Node / Cloudflare Workers ----
+node_modules/
+.wrangler/
+.dev.vars
+
+# ---- Frontend (managed by its own repo: l4kushwaha/bgmi-frontend) ----
+frontend/
+
+# ---- Secrets & env files (never commit) ----
+.env
+.env.*
+!.env.example
+
+# ---- Databases (D1 local backups) ----
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log

@@ -1,0 +1,24 @@
+name = "bgmi-gateway"
+main = "index.js"
+compatibility_date = "2025-11-03"
+
+# ============================================================
+# Service URLs (deployed Cloudflare Worker names)
+# NOTE: These names must match the actual deployed workers:
+#   auth-service        (auth worker)
+#   bgmi_marketplace_service
+#   bgmi-marketplace   (wallet worker)
+#   verification_service
+#   bgmi_chat_service
+# ============================================================
+[vars]
+AUTH_SERVICE_URL = "https://auth-service.bgmi-gateway.workers.dev"
+MARKET_SERVICE_URL = "https://bgmi_marketplace_service.bgmi-gateway.workers.dev"
+WALLET_SERVICE_URL = "https://bgmi-marketplace.bgmi-gateway.workers.dev"
+VERIFY_SERVICE_URL = "https://verification_service.bgmi-gateway.workers.dev"
+CHAT_SERVICE_URL = "https://bgmi_chat_service.bgmi-gateway.workers.dev"
+
+# Secrets (set via `wrangler secret put`, never commit):
+#   JWT_SECRET       – shared signing secret (identical across all workers)
+#   ADMIN_EMAIL      – admin login email
+#   ADMIN_PASSWORD   – admin login password

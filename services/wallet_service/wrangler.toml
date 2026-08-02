@@ -7,5 +7,10 @@ binding = "bgmi_db"
 database_name = "bgmi_db"
 database_id = "c31098c3-afc8-481e-9191-b7b349853ebe"
 
-[vars]
-RAZORPAY_KEY_ID = "rzp_test_xxx"
+# Secrets (set via `wrangler secret put bgmi-marketplace <NAME>`, never commit):
+#   RAZORPAY_KEY_ID     – Razorpay live/test key id
+#   RAZORPAY_KEY_SECRET – Razorpay key secret
+#
+# NOTE: the deployed wallet worker name is `bgmi-marketplace`
+# (URL: https://bgmi-marketplace.bgmi-gateway.workers.dev).
+# The frontend + gateway must use THIS name, not `bgmi-wallet-service`.

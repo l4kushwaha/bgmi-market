@@ -1,0 +1,49 @@
+name: Deploy Cloudflare Workers
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy-workers:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        worker:
+          - name: gateway
+            dir: gateway/hosting_cloudflare
+          - name: auth-service
+            dir: services/auth_service/hosting_cloudflare
+          - name: bgmi_marketplace_service
+            dir: services/marketplace_service/hosting_cloudflare
+          - name: bgmi_chat_service
+            dir: services/chat_service/hosting_cloudflare
+          - name: verification_service
+            dir: services/verification_service/hosting_cloudflare
+          - name: bgmi-marketplace
+            dir: services/wallet_service
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.worker.dir }}
+        run: |
+          if [ -f package.json ]; then
+            npm ci --omit=dev || npm install --omit=dev
+          fi
+
+      - name: Deploy ${{ matrix.worker.name }}
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: ${{ matrix.worker.dir }}
+          command: deploy

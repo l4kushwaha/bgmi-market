@@ -139,8 +139,11 @@ export default {
           return jsonResponse({ error: "Too many login attempts. Try later." }, 429);
         }
 
-        const ADMIN_EMAIL = env.ADMIN_EMAIL ?? "L4kushwaha@gmail.com";
-        const ADMIN_PASSWORD = env.ADMIN_PASSWORD ?? "ELEGENT1832";
+        const ADMIN_EMAIL = env.ADMIN_EMAIL;
+        const ADMIN_PASSWORD = env.ADMIN_PASSWORD;
+        if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
+          return jsonResponse({ error: "Admin credentials not configured" }, 500);
+        }
 
         if (email.toLowerCase() === ADMIN_EMAIL.toLowerCase() && password === ADMIN_PASSWORD) {
           const access = await jwtSign({ id: 0, email, role: "admin" }, env.JWT_SECRET, "15m");

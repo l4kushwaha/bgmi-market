@@ -1,0 +1,11 @@
+{
+  "name": "bgmi-gateway-worker",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker gateway for BGMI Market (proxy + health + admin)",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "author": "Lalit",
+  "license": "MIT"
+}
