@@ -10,7 +10,7 @@ compatibility_date = "2025-11-12"
 # =====================================================
 [[d1_databases]]
 binding = "marketplace_db"
-database_name = "bgmi_marketplace_db"
+database_name = "marketplace-db"
 database_id = "71eff31d-c376-4bb5-aa6e-edc2fe5d1afa"
 
 # =====================================================

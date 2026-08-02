@@ -72,7 +72,7 @@ function Deploy-Worker($dir, $envName) {
 # ---- 5. Deploy all workers ----
 Deploy-Worker (Join-Path $root "gateway\hosting_cloudflare") $null
 Deploy-Worker (Join-Path $root "services\auth_service\hosting_cloudflare") $null
-Deploy-Worker (Join-Path $root "services\marketplace_service\hosting_cloudflare") "production"
+Deploy-Worker (Join-Path $root "services\marketplace_service\hosting_cloudflare") $null
 Deploy-Worker (Join-Path $root "services\wallet_service") $null
 Deploy-Worker (Join-Path $root "services\verification_service\hosting_cloudflare") $null
 Deploy-Worker (Join-Path $root "services\chat_service\hosting_cloudflare") $null
