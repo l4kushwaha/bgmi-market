@@ -10,6 +10,7 @@ frontend/
 .env
 .env.*
 !.env.example
+scripts/.secrets/
 
 # ---- Databases (D1 local backups) ----
 *.db

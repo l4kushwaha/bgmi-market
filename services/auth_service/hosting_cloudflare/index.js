@@ -331,12 +331,16 @@ export default {
         if (ex.length > 0) return jsonResponse({ error: "User already exists" }, 409);
 
         const hash = bcrypt.hashSync(password, 10);
+        const role =
+          env.ADMIN_EMAIL && String(email).toLowerCase() === String(env.ADMIN_EMAIL).toLowerCase()
+            ? "admin"
+            : "user";
         const insert = await env.AUTH_DB.prepare(
           "INSERT INTO users(email,username,password_hash,role,status,created_at) VALUES(?,?,?,?,?,datetime('now'))"
-        ).bind(email, username, hash, "user", "active").run();
+        ).bind(email, username, hash, role, "active").run();
 
         await logActivity(env, insert.lastInsertRowid, "register");
-        return jsonResponse({ message: "Registered successfully", user: { id: insert.lastInsertRowid, email, role: "user" } });
+        return jsonResponse({ message: "Registered successfully", user: { id: insert.lastInsertRowid, email, role } });
       }
 
       // REFRESH TOKEN

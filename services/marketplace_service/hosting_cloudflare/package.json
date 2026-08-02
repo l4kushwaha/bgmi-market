@@ -1,16 +1,8 @@
 {
-  "name": "hosting_cloudflare",
+  "name": "marketplace-service",
+  "private": true,
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
-    "@tsndr/cloudflare-worker-jwt": "^3.2.0"
+    "@tsndr/cloudflare-worker-jwt": "^2.4.2"
   }
 }
