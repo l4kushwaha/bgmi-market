@@ -510,12 +510,16 @@ export default {
           await sendOtpEmail(email, otp, env);
         } catch (e) {
           console.error("OTP send failed:", e);
-          // Dev fallback: if no email provider works, hand the OTP to the UI directly.
-          // Remove this once a provider (EmailJS/Brevo/Resend) is configured.
-          if (env.DEV_OTP_RETURN !== "0") {
+          // SECURITY: backup-code is returned ONLY when explicitly enabled (DEV_OTP_RETURN="1")
+          // AND the target email is allow-listed (DEV_OTP_EMAILS="a@x,b@y"). Off by default so
+          // a stranger who knows a user's email cannot take over the account.
+          const allow = (env.DEV_OTP_EMAILS || "")
+            .split(",").map((s) => s.trim().toLowerCase())
+            .filter(Boolean);
+          if (env.DEV_OTP_RETURN === "1" && allow.includes(String(email).toLowerCase())) {
             return jsonResponse({ message: "Email service unavailable — backup code used", dev_otp: otp });
           }
-          return jsonResponse({ error: e.message }, 500);
+          return jsonResponse({ error: "Could not send OTP email. Try again later." }, 503);
         }
 
         return jsonResponse({ message: "OTP sent to email" });
