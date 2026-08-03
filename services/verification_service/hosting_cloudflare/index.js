@@ -1,4 +1,28 @@
-import { unzipSync } from "fflate";
+import { Unzip, UnzipInflate } from "fflate";
+
+// Streaming unzip with decompression caps (zip-bomb guard).
+// Throws if any entry declares or emits more than maxOut bytes.
+function safeUnzip(buf, maxOut) {
+  const files = {};
+  let total = 0;
+  const u = new Unzip((file) => {
+    if (file.originalSize > maxOut) throw new Error("ZIP file too large");
+    file.ondata = (err, data) => {
+      if (err) return;
+      total += data.length;
+      if (total > maxOut) throw new Error("ZIP file too large");
+      const prev = files[file.name] || new Uint8Array(0);
+      const next = new Uint8Array(prev.length + data.length);
+      next.set(prev);
+      next.set(data, prev.length);
+      files[file.name] = next;
+    };
+    file.start();
+  });
+  u.register(UnzipInflate);
+  u.push(buf, true);
+  return files;
+}
 
 function base64UrlDecode(str) {
   const base64 = str.replace(/-/g, "+").replace(/_/g, "/");
@@ -28,6 +52,11 @@ async function verifyJwt(token, secret) {
   } catch {
     return null;
   }
+}
+
+// Strip HTML-unsafe + control chars before storing user-provided text
+function cleanText(v, max = 500) {
+  return String(v ?? "").replace(/[<>&'"`\x00-\x1f]/g, "").trim().slice(0, max);
 }
 
 export default {
@@ -83,8 +112,8 @@ export default {
         if (!file || !shareCode) {
           return json({ error: "Missing file or share_code" }, 400);
         }
-        if (file.size > 5 * 1024 * 1024) {
-          return json({ error: "File too large (max 5MB)" }, 400);
+        if (file.size > 2 * 1024 * 1024) {
+          return json({ error: "File too large (max 2MB)" }, 400);
         }
         const cleanShare = String(shareCode).replace(/[^A-Za-z0-9]/g, "").slice(0, 40);
         if (cleanShare.length < 4) {
@@ -96,23 +125,28 @@ export default {
 
         const kvKey = `ekyc_${userId}_${Date.now()}`;
         const buf = await file.arrayBuffer();
-        if (buf.byteLength > 5 * 1024 * 1024) {
-          return json({ error: "File too large (max 5MB)" }, 400);
+        if (buf.byteLength > 2 * 1024 * 1024) {
+          return json({ error: "File too large (max 2MB)" }, 400);
         }
         await UPLOADS.put(kvKey, buf);
 
         // Try to extract what we can; otherwise leave blank for manual review
         let parsedData = { name: "", gender: "", dob: "", address: "" };
-        try {
-          const zipData = unzipSync(new Uint8Array(await file.arrayBuffer()));
-          const xmlFile = Object.keys(zipData).find(k => k.endsWith(".xml"));
-          if (xmlFile) {
-            const xml = new TextDecoder().decode(zipData[xmlFile]);
-            const grab = (tag) => (xml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`)) || [])[1] || "";
-            parsedData = { name: grab("name"), gender: grab("gender"), dob: grab("dob"), address: grab("address") };
+        const bytes = new Uint8Array(buf);
+        const isZip = bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b &&
+          (bytes[2] === 0x03 || bytes[2] === 0x05 || bytes[2] === 0x07);
+        if (isZip) {
+          try {
+            const zipData = safeUnzip(bytes, 8 * 1024 * 1024);
+            const xmlFile = Object.keys(zipData).find(k => k.endsWith(".xml"));
+            if (xmlFile) {
+              const xml = new TextDecoder().decode(zipData[xmlFile]);
+              const grab = (tag) => (xml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`)) || [])[1] || "";
+              parsedData = { name: grab("name"), gender: grab("gender"), dob: grab("dob"), address: grab("address") };
+            }
+          } catch (e) {
+            // not a valid zip, zip bomb, or unparseable — still record submission
           }
-        } catch (e) {
-          // not a valid zip or unparseable — still record submission
         }
 
         const aadhaar = cleanShare.length >= 4 ? "XXXX-XXXX-" + cleanShare.slice(-4) : null;
@@ -190,32 +224,52 @@ export default {
         if (userId !== String(user.id) && user.role !== "admin") {
           return json({ error: "forbidden" }, 403);
         }
-        const { name, gender, address, pan_number, bio, instagram, facebook, upi_id } = data;
+        const { name, gender, address, pan_number, bio, instagram, facebook, upi_id, photo_url } = data;
 
         const cleanUpi = String(upi_id || "").replace(/[^\w.\-@]/g, "").trim().slice(0, 60);
         if (upi_id && !/^[\w.\-]{2,}@[a-zA-Z]{2,}$/.test(cleanUpi)) {
           return json({ error: "Invalid UPI ID (format: name@bank)" }, 400);
         }
 
+        const cleanName = cleanText(name, 100);
+        const cleanGender = cleanText(gender, 20);
+        const cleanAddress = cleanText(address, 300);
+        const cleanPan = cleanText(pan_number, 20).toUpperCase();
+        const cleanBio = cleanText(bio, 200);
+        const cleanIg = cleanText(instagram, 80);
+        const cleanFb = cleanText(facebook, 80);
+
+        let cleanPhoto = "";
+        if (photo_url) {
+          cleanPhoto = String(photo_url).trim();
+          if (!/^data:image\/(png|jpeg|jpg|webp);base64,/i.test(cleanPhoto)) {
+            return json({ error: "Invalid photo format" }, 400);
+          }
+          if (cleanPhoto.length > 300000) {
+            return json({ error: "Photo too large (max ~200KB)" }, 400);
+          }
+        }
+
         await VERIFICATION_DB.prepare(
-          `INSERT INTO user_profiles (user_id, name, gender, address, pan_number, bio, instagram, facebook, upi_id, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          `INSERT INTO user_profiles (user_id, name, gender, address, pan_number, bio, instagram, facebook, upi_id, photo_url, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
            ON CONFLICT(user_id) DO UPDATE SET
              name=excluded.name, gender=excluded.gender, address=excluded.address,
              pan_number=excluded.pan_number, bio=excluded.bio,
              instagram=excluded.instagram, facebook=excluded.facebook,
-             upi_id=excluded.upi_id,
+             upi_id=excluded.upi_id, photo_url=excluded.photo_url,
              updated_at=CURRENT_TIMESTAMP`
         ).bind(
           userId,
-          name || null,
-          gender || null,
-          address || null,
-          pan_number || null,
-          bio || null,
-          instagram || null,
-          facebook || null,
-          cleanUpi || null
+          cleanName || null,
+          cleanGender || null,
+          cleanAddress || null,
+          cleanPan || null,
+          cleanBio || null,
+          cleanIg || null,
+          cleanFb || null,
+          cleanUpi || null,
+          cleanPhoto || null
         ).run();
 
         return json({ message: "Profile updated successfully" });

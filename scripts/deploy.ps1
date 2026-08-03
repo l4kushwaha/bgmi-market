@@ -95,7 +95,7 @@ Write-Host "`n[schema] applying D1 migrations..."
 wrangler d1 execute verification_d1 --remote --file (Join-Path $root "services\auth_service\hosting_cloudflare\schema.sql") 2>&1 | Select-String -Pattern "Executed|error|Error" 
 wrangler d1 execute verification_d1 --remote --file (Join-Path $root "services\verification_service\hosting_cloudflare\schema.sql") 2>&1 | Select-String -Pattern "Executed|error|Error"
 wrangler d1 execute bgmi_chat_db --remote --file (Join-Path $root "services\chat_service\hosting_cloudflare\schema.sql") 2>&1 | Select-String -Pattern "Executed|error|Error"
-wrangler d1 execute bgmi_marketplace_db --remote --file (Join-Path $root "services\marketplace_service\hosting_cloudflare\schema.sql") 2>&1 | Select-String -Pattern "Executed|error|Error"
+wrangler d1 execute marketplace-db --remote --file (Join-Path $root "services\marketplace_service\hosting_cloudflare\schema.sql") 2>&1 | Select-String -Pattern "Executed|error|Error"
 wrangler d1 execute bgmi_db --remote --file (Join-Path $root "services\wallet_service\schema.sql") 2>&1 | Select-String -Pattern "Executed|error|Error"
 
 # ---- 8. Seed admin user into auth DB (verification_d1.users) ----

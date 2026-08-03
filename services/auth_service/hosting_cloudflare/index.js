@@ -61,22 +61,35 @@ async function logActivity(env, user_id, type, details = "") {
 // Rate Limit
 async function checkRateLimit(env, key, limit = 5, windowMin = 15) {
   const now = new Date();
-  const { results } = await env.AUTH_DB.prepare(
-    "SELECT * FROM rate_limits WHERE key = ? AND expires_at > datetime('now')"
-  ).bind(key).all();
+  try {
+    const { results } = await env.AUTH_DB.prepare(
+      "SELECT * FROM rate_limits WHERE key = ? AND expires_at > datetime('now')"
+    ).bind(key).all();
 
-  if (results.length > 0) {
-    const entry = results[0];
-    if (entry.count >= limit) return false;
-    await env.AUTH_DB.prepare(
-      "UPDATE rate_limits SET count = count + 1 WHERE key = ?"
-    ).bind(key).run();
-    return true;
-  } else {
-    const expires = sqliteDatetime(new Date(now.getTime() + windowMin * 60000));
-    await env.AUTH_DB.prepare(
-      "INSERT INTO rate_limits(key,count,expires_at) VALUES(?,?,?)"
-    ).bind(key, 1, expires).run();
+    if (results.length > 0) {
+      const entry = results[0];
+      if (entry.count >= limit) return false;
+      await env.AUTH_DB.prepare(
+        "UPDATE rate_limits SET count = count + 1 WHERE key = ?"
+      ).bind(key).run();
+      return true;
+    } else {
+      const expires = sqliteDatetime(new Date(now.getTime() + windowMin * 60000));
+      // clear any stale (expired) row for this key to avoid UNIQUE conflicts
+      await env.AUTH_DB.prepare("DELETE FROM rate_limits WHERE key = ?").bind(key).run();
+      const insert = await env.AUTH_DB.prepare(
+        "INSERT OR IGNORE INTO rate_limits(key,count,expires_at) VALUES(?,?,?)"
+      ).bind(key, 1, expires).run();
+      if (insert.meta.changes === 0) {
+        // raced: a concurrent request inserted the row between SELECT and INSERT
+        await env.AUTH_DB.prepare(
+          "UPDATE rate_limits SET count = count + 1, expires_at = ? WHERE key = ?"
+        ).bind(expires, key).run();
+      }
+      return true;
+    }
+  } catch (e) {
+    console.error("rate limit error:", e.message);
     return true;
   }
 }
@@ -93,8 +106,18 @@ const TEMP_DOMAINS = [
   "guerrillamail.com"
 ];
 
+function secureDigit() {
+  const arr = new Uint8Array(1);
+  do {
+    crypto.getRandomValues(arr);
+  } while (arr[0] >= 250); // rejection sample → uniform 0-9
+  return arr[0] % 10;
+}
+
 function generateOTP(len = 6) {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+  let s = "";
+  for (let i = 0; i < len; i++) s += secureDigit();
+  return s;
 }
 
 async function sendOtpEmail(email, otp, env) {
@@ -429,6 +452,9 @@ export default {
         if (!await checkRateLimit(env, `email:otp:${email}`, 3, 15)) {
           return jsonResponse({ error: "Too many OTP requests. Try later." }, 429);
         }
+        if (!await checkRateLimit(env, `ip:otp:${ip}`, 5, 60)) {
+          return jsonResponse({ error: "Too many OTP requests from this device. Try later." }, 429);
+        }
 
         const { results } = await env.AUTH_DB.prepare(
           "SELECT id FROM users WHERE email=?"
@@ -439,8 +465,11 @@ export default {
 
         const userId = results[0].id;
         const otp = generateOTP();
-        const expiry = new Date(Date.now() + 10 * 60000).toISOString();
+        const expiry = sqliteDatetime(new Date(Date.now() + 10 * 60000));
 
+        await env.AUTH_DB.prepare(
+          "DELETE FROM password_resets WHERE user_id=?"
+        ).bind(userId).run();
         await env.AUTH_DB.prepare(
           "INSERT INTO password_resets(user_id,otp,expires_at) VALUES(?,?,?)"
         ).bind(userId, otp, expiry).run();
@@ -460,6 +489,14 @@ export default {
         const body = await request.json().catch(() => ({}));
         const { otp, new_password } = body;
         if (!otp || !new_password) return jsonResponse({ error: "OTP & new password required" }, 400);
+
+        if (typeof new_password !== "string" || new_password.length < 8 || new_password.length > 128) {
+          return jsonResponse({ error: "Password must be 8-128 characters" }, 400);
+        }
+
+        if (!await checkRateLimit(env, `ip:reset:${ip}`, 10, 60)) {
+          return jsonResponse({ error: "Too many reset attempts. Try later." }, 429);
+        }
 
         const { results } = await env.AUTH_DB.prepare(
           "SELECT * FROM password_resets WHERE otp=? AND expires_at>datetime('now')"

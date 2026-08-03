@@ -219,9 +219,12 @@ export default {
           return json({ error: "forbidden" }, 403);
         }
 
+        const cleanUtr = String(utr || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 40);
+        if (cleanUtr.length < 6) return json({ error: "invalid_utr" }, 400);
+
         await db.prepare(`
           UPDATE service_payments SET status='submitted', utr=? WHERE order_id=?
-        `).bind(String(utr).trim().toUpperCase(), order_id).run();
+        `).bind(cleanUtr, order_id).run();
 
         return json({ message: "Payment submitted for verification", status: "submitted" });
       }

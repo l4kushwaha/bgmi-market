@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS listings (
   description TEXT,
   category TEXT DEFAULT 'account',       -- account / popularity
   points INTEGER DEFAULT 0,              -- popularity points (when category=popularity)
+  delivery_time TEXT,                    -- popularity boost delivery estimate (buyer chooses at purchase)
   price REAL DEFAULT 0,
   level INTEGER DEFAULT 0,
   highest_rank TEXT,
@@ -40,6 +41,8 @@ CREATE TABLE IF NOT EXISTS listings (
   ultimate TEXT,                         -- JSON array (Ultimate items)
   images TEXT,                           -- JSON array of URLs
   status TEXT DEFAULT 'available',       -- available / pending / sold / hidden
+  meetup_available INTEGER DEFAULT 0,    -- 1 = seller offers real meetup for this listing
+  city TEXT,                             -- seller city (for city-wise search / meetup)
   avg_rating REAL DEFAULT 0,
   review_count INTEGER DEFAULT 0,
   seller_verified INTEGER DEFAULT 0,
@@ -59,6 +62,10 @@ CREATE TABLE IF NOT EXISTS sellers (
   status TEXT DEFAULT 'active',          -- active / banned
   total_sales INTEGER DEFAULT 0,
   total_revenue REAL DEFAULT 0,
+  city TEXT,                             -- seller city (city-wise search)
+  meetup_note TEXT,                      -- safety note shown for meetups
+  pending_commission REAL DEFAULT 0,     -- 2.5% per sale, payable to admin
+  hidden INTEGER DEFAULT 0,              -- 1 = hidden from users (unpaid commission)
   updated_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -89,6 +96,8 @@ CREATE TABLE IF NOT EXISTS purchases (
   price REAL NOT NULL,
   payment_status TEXT DEFAULT 'pending', -- pending / paid / released / refunded
   delivery_status TEXT DEFAULT 'awaiting', -- awaiting / delivered / confirmed
+  delivery_time TEXT,                    -- buyer's chosen boost delivery time
+  target_uid TEXT,                       -- popularity boost: buyer's BGMI UID (jis pe pop dalni hai)
   transaction_ref TEXT,
   escrow_held INTEGER DEFAULT 0,         -- 0 = no, 1 = in escrow
   created_at TEXT DEFAULT (datetime('now')),
@@ -140,6 +149,24 @@ CREATE TABLE IF NOT EXISTS chat_links (
 );
 
 -- ========================================================
+-- 💸 COMMISSION PAYMENTS TABLE (2.5% seller commission)
+-- ========================================================
+CREATE TABLE IF NOT EXISTS commission_payments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  seller_id TEXT NOT NULL,
+  amount REAL NOT NULL,
+  status TEXT DEFAULT 'submitted',        -- submitted / paid / rejected
+  utr TEXT,
+  reviewed_by TEXT,
+  note TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  reviewed_at TEXT,
+  FOREIGN KEY (seller_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_cp_seller ON commission_payments(seller_id);
+CREATE INDEX IF NOT EXISTS idx_cp_status ON commission_payments(status);
+
+-- ========================================================
 -- ⭐ POPULARITY TABLE (per-user popularity points ledger)
 -- ========================================================
 CREATE TABLE IF NOT EXISTS popularity (
@@ -165,6 +192,28 @@ CREATE TABLE IF NOT EXISTS seller_verifications (
   reviewed_at TEXT,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+-- ========================================================
+-- 🤝 MEETUP REQUESTS TABLE (real-world ID delivery)
+-- ========================================================
+CREATE TABLE IF NOT EXISTS meetup_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  listing_id INTEGER NOT NULL,
+  buyer_id TEXT NOT NULL,
+  seller_id TEXT NOT NULL,
+  city TEXT,
+  location TEXT,
+  meet_date TEXT,
+  meet_time TEXT,
+  note TEXT,
+  status TEXT DEFAULT 'pending',        -- pending / approved / declined / completed / cancelled
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (listing_id) REFERENCES listings(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_meetups_buyer ON meetup_requests(buyer_id);
+CREATE INDEX IF NOT EXISTS idx_meetups_seller ON meetup_requests(seller_id);
+CREATE INDEX IF NOT EXISTS idx_meetups_status ON meetup_requests(status);
 
 -- ========================================================
 -- ⚡ INDEXES

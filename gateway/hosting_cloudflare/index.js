@@ -139,6 +139,9 @@ function json(data, status, headers) {
   });
 }
 
+// Per-isolate admin login brute-force guard (Map<ip, {t, n}>)
+const adminLoginHits = new Map();
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -174,6 +177,19 @@ export default {
 
     // --- Admin login ---
     if (path === "/api/admin/login" && request.method === "POST") {
+      // In-memory per-isolate brute-force guard (per IP)
+      const now = Date.now();
+      const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+      const rl = adminLoginHits.get(ip);
+      if (rl && now - rl.t < 60000 && rl.n >= 5) {
+        return json({ error: "Too many login attempts. Try later." }, 429, cors);
+      }
+      if (!rl || now - rl.t >= 60000) {
+        adminLoginHits.set(ip, { t: now, n: 1 });
+      } else {
+        rl.n++;
+      }
+
       const { email, password } = await request.json().catch(() => ({}));
       const ADMIN_EMAIL = env.ADMIN_EMAIL;
       const ADMIN_PASSWORD = env.ADMIN_PASSWORD;

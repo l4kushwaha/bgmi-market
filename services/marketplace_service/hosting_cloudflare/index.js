@@ -79,15 +79,24 @@ export default {
         .bind(sid).first();
       if (!s) {
         await db.prepare(
-          "INSERT INTO sellers (user_id, stars, review_count, badge, status, total_sales, total_revenue) VALUES (?,0,0,'new','active',0,0)"
+          "INSERT INTO sellers (user_id, stars, review_count, badge, status, total_sales, total_revenue, pending_commission, hidden) VALUES (?,0,0,'new','active',0,0,0,0)"
         ).bind(sid).run();
       }
+    }
+
+    async function sellerHidden(userId) {
+      const s = await db.prepare(
+        "SELECT hidden FROM sellers WHERE CAST(user_id AS TEXT)=?"
+      ).bind(String(userId)).first();
+      return !!(s && Number(s.hidden) === 1);
     }
 
     const normalize = r => ({
       ...r,
       category: r.category || "account",
       points: r.points || 0,
+      delivery_time: r.delivery_time || "",
+      meetup_available: r.meetup_available || 0,
       mythic_items: safeJSON(r.mythic_items),
       legendary_items: safeJSON(r.legendary_items),
       honor_gift: safeJSON(r.honor_gift ?? r.gift_items),
@@ -131,11 +140,19 @@ export default {
         const parts = path.split("/");
         const sellerId = String(decodeURIComponent(parts[3] || ""));
         const seller = await db.prepare(
-          `SELECT user_id, stars, review_count, badge, status, total_sales, total_revenue
+          `SELECT user_id, stars, review_count, badge, status, total_sales, total_revenue, city, meetup_note, pending_commission, hidden
            FROM sellers WHERE CAST(user_id AS TEXT)=?`
         ).bind(sellerId).first();
 
         if (!seller) return sendJSON({ error: "Seller not found" }, 404);
+
+        const viewer = await verifyJWT(request);
+        const isOwner = viewer && String(viewer.id) === String(seller.user_id);
+        const isAdmin = viewer && String(viewer.role) === "admin";
+
+        if (Number(seller.hidden) === 1 && !isOwner && !isAdmin) {
+          return sendJSON({ error: "Seller not found" }, 404);
+        }
 
         const listings = await db.prepare(
           "SELECT * FROM listings WHERE CAST(seller_id AS TEXT)=? AND status='available'"
@@ -147,7 +164,7 @@ export default {
            ORDER BY created_at DESC LIMIT 20`
         ).bind(sellerId).all();
 
-        return sendJSON({
+        const resp = {
           user_id: seller.user_id,
           name: `Seller ${seller.user_id}`,
           avg_rating: Number(seller.stars || 0).toFixed(1),
@@ -156,38 +173,55 @@ export default {
           badge: seller.badge,
           total_sales: seller.total_sales,
           total_revenue: seller.total_revenue,
+          city: seller.city || "",
+          meetup_note: seller.meetup_note || "",
           listings: listings.results.map(normalize),
           reviews: reviews.results
-        });
+        };
+        if (isOwner || isAdmin) {
+          resp.pending_commission = Number(seller.pending_commission || 0);
+          resp.hidden = Number(seller.hidden || 0);
+        }
+        return sendJSON(resp);
       }
 
       /* ================= GET LISTINGS ================= */
       if (path === "/api/listings" && method === "GET") {
-        let q = "SELECT * FROM listings WHERE status='available'";
+        let q = "SELECT l.*, s.city AS seller_city FROM listings l LEFT JOIN sellers s ON CAST(s.user_id AS TEXT)=l.seller_id WHERE l.status='available' AND COALESCE(s.hidden,0)=0";
         const binds = [];
         const search = url.searchParams.get("q");
         const filter = url.searchParams.get("filter");
         const category = url.searchParams.get("category");
+        const city = url.searchParams.get("city");
         const user = await verifyJWT(request);
 
         if (search) {
-          q += " AND (title LIKE ? OR uid LIKE ? OR highest_rank LIKE ?)";
+          q += " AND (l.title LIKE ? OR l.uid LIKE ? OR l.highest_rank LIKE ?)";
           binds.push(`%${search}%`, `%${search}%`, `%${search}%`);
         }
 
         if (category && (category === "account" || category === "popularity")) {
-          q += " AND category=?";
+          q += " AND l.category=?";
           binds.push(category);
         }
 
+        if (city) {
+          const cleanCity = cleanVal(city, 40);
+          if (cleanCity) {
+            q += " AND (l.city LIKE ? OR s.city LIKE ?)";
+            binds.push(`%${cleanCity}%`, `%${cleanCity}%`);
+          }
+        }
+
         if (filter === "own" && user) {
-          q += " AND CAST(seller_id AS TEXT)=?";
+          q += " AND CAST(l.seller_id AS TEXT)=?";
           binds.push(String(user.seller_id || user.id));
         }
 
-        if (filter === "price_high") q += " ORDER BY price DESC";
-        else if (filter === "price_low") q += " ORDER BY price ASC";
-        else q += " ORDER BY created_at DESC";
+        if (filter === "meetup") q += " AND l.meetup_available=1";
+        if (filter === "price_high") q += " ORDER BY l.price DESC";
+        else if (filter === "price_low") q += " ORDER BY l.price ASC";
+        else q += " ORDER BY l.created_at DESC";
 
         const limit = Math.min(Number(url.searchParams.get("limit") || 100), 200);
         const offset = Number(url.searchParams.get("offset") || 0);
@@ -215,14 +249,20 @@ export default {
         }
         await ensureSeller(user.id);
 
+        if (await sellerHidden(user.id)) {
+          return sendJSON({ error: "Your seller account is hidden due to unpaid commission. Pay your pending commission to get unlisted." }, 403);
+        }
+
         const b = await request.json();
-        if (!b.uid || !b.title || !b.price) {
-          return sendJSON({ error: "uid, title & price required" }, 400);
+        if (!b.title || !b.price) {
+          return sendJSON({ error: "title & price required" }, 400);
         }
 
         const category = b.category === "popularity" ? "popularity" : "account";
-        const cleanUid = String(b.uid).replace(/[^0-9]/g, "").slice(0, 12);
-        if (!/^[0-9]{1,12}$/.test(cleanUid)) return sendJSON({ error: "Invalid UID" }, 400);
+        const cleanUid = category === "account"
+          ? String(b.uid || "").replace(/[^0-9]/g, "").slice(0, 12)
+          : "";
+        if (category === "account" && !/^[0-9]{1,12}$/.test(cleanUid)) return sendJSON({ error: "Invalid UID" }, 400);
         const cleanTitle = String(b.title).replace(/[<>&'"`]/g, "").trim().slice(0, 80);
         if (!cleanTitle) return sendJSON({ error: "Title required" }, 400);
         const price = Number(b.price);
@@ -234,14 +274,23 @@ export default {
           return sendJSON({ error: "Popularity points must be between 1 and 10,000,000" }, 400);
         }
         const cleanDesc = String(b.description || "").replace(/[<>&'"`]/g, "").trim().slice(0, 1000);
+        const deliveryTime = String(b.delivery_time || "").replace(/[<>&'"`]/g, "").trim().slice(0, 60);
+        const meetupAvailable = b.meetup_available === 1 || b.meetup_available === true || String(b.meetup_available) === "1" ? 1 : 0;
+        const cleanCity = cleanVal(b.city, 40);
+
+        if (cleanCity) {
+          await db.prepare(
+            "UPDATE sellers SET city=?, meetup_note=?, updated_at=datetime('now') WHERE CAST(user_id AS TEXT)=?"
+          ).bind(cleanCity, cleanVal(b.meetup_note, 120), String(user.id)).run();
+        }
 
         const insert = await db.prepare(
           `INSERT INTO listings
-          (seller_id,uid,title,description,category,points,price,level,highest_rank,
+          (seller_id,uid,title,description,category,points,delivery_time,price,level,highest_rank,
            mythic_items,legendary_items,honor_gift,upgraded_guns,titles,
-           x_suit,supercar,ultimate,images,
+           x_suit,supercar,ultimate,images,meetup_available,city,
            status,avg_rating,review_count,seller_verified)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'available',0,0,0)`
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'available',0,0,0)`
         ).bind(
           String(user.id),
           cleanUid,
@@ -249,6 +298,7 @@ export default {
           cleanDesc,
           category,
           points,
+          deliveryTime,
           price,
           b.level || 0,
           b.highest_rank || "",
@@ -260,7 +310,9 @@ export default {
           JSON.stringify(b.x_suit || []),
           JSON.stringify(b.supercar || []),
           JSON.stringify(b.ultimate || []),
-          JSON.stringify(b.images || [])
+          JSON.stringify(b.images || []),
+          meetupAvailable,
+          cleanCity || null
         ).run();
 
         return sendJSON({ message: "Listing created", id: insert.meta?.last_row_id ?? insert.lastInsertRowid });
@@ -292,7 +344,7 @@ export default {
           `UPDATE listings SET
             title=?, description=?, price=?, level=?, highest_rank=?,
             mythic_items=?, legendary_items=?, honor_gift=?, upgraded_guns=?, titles=?,
-            x_suit=?, supercar=?, ultimate=?, images=?,
+            x_suit=?, supercar=?, ultimate=?, images=?, delivery_time=?, meetup_available=?, city=?,
             updated_at=datetime('now')
            WHERE id=?`
         ).bind(
@@ -310,6 +362,9 @@ export default {
           JSON.stringify(b.supercar || []),
           JSON.stringify(b.ultimate || []),
           JSON.stringify(b.images || []),
+          String(b.delivery_time || "").replace(/[<>&'"`]/g, "").trim().slice(0, 60) || null,
+          (b.meetup_available === 1 || b.meetup_available === true || String(b.meetup_available) === "1") ? 1 : 0,
+          cleanVal(b.city, 40) || null,
           listingId
         ).run();
 
@@ -338,6 +393,9 @@ export default {
       if (path === "/api/purchases" && method === "POST") {
         const user = await verifyJWT(request);
         if (!user) return sendJSON({ error: "Unauthorized" }, 401);
+        if (!rate(`buy:${user.id}`, 10, 60000)) {
+          return sendJSON({ error: "Too many purchase attempts. Try later." }, 429);
+        }
 
         const b = await request.json();
         if (!b.listing_id) return sendJSON({ error: "listing_id required" }, 400);
@@ -349,10 +407,27 @@ export default {
           return sendJSON({ error: "Cannot buy your own listing" }, 400);
         }
 
+        // Popularity boost → buyer must give the game UID where the pop should be delivered
+        let targetUid = "";
+        if (listing.category === "popularity") {
+          targetUid = String(b.target_uid || "").replace(/[^0-9]/g, "").slice(0, 12);
+          if (!/^[0-9]{1,12}$/.test(targetUid)) {
+            return sendJSON({ error: "target_uid required (aapki BGMI UID jis pe pop dalni hai)" }, 400);
+          }
+        }
+
         const insert = await db.prepare(
-          `INSERT INTO purchases (listing_id, buyer_id, seller_id, price, payment_status, delivery_status, created_at, updated_at)
-           VALUES (?,?,?,?,'pending','awaiting',datetime('now'),datetime('now'))`
-        ).bind(b.listing_id, String(user.id), String(listing.seller_id), listing.price).run();
+          `INSERT INTO purchases (listing_id, buyer_id, seller_id, price, payment_status, delivery_status, delivery_time, target_uid, created_at, updated_at)
+           VALUES (?,?,?,?,'pending','awaiting',?,?,datetime('now'),datetime('now'))`
+        ).bind(
+          b.listing_id,
+          String(user.id),
+          String(listing.seller_id),
+          listing.price,
+          String(b.delivery_time || "").replace(/[<>&'"`]/g, "").trim().slice(0, 60) || null,
+          targetUid || null
+        ).run();
+        const purchaseId = insert.meta?.last_row_id ?? insert.lastInsertRowid;
 
         // Popularity listing purchased → credit buyer's popularity points
         if (listing.category === "popularity" && listing.points > 0) {
@@ -362,10 +437,25 @@ export default {
           ).bind(String(user.id), listing.points).run();
         }
 
+        // 2.5% commission accrues to seller on every sale
+        const commission = Math.round(Number(listing.price || 0) * 0.025 * 100) / 100;
+        if (commission > 0) {
+          await db.prepare(
+            `UPDATE sellers SET pending_commission = COALESCE(pending_commission,0) + ?,
+                    total_sales = COALESCE(total_sales,0) + 1, total_revenue = COALESCE(total_revenue,0) + ?,
+                    updated_at = datetime('now')
+             WHERE CAST(user_id AS TEXT)=?`
+          ).bind(commission, Number(listing.price || 0), String(listing.seller_id)).run();
+          await db.prepare(
+            `INSERT INTO transaction_logs (purchase_id, buyer_id, seller_id, amount, type, source_service, note, created_at)
+             VALUES (?,?,?,?,?,?,?,datetime('now'))`
+          ).bind(purchaseId, String(user.id), String(listing.seller_id), commission, "debit", "marketplace", "2.5% seller commission").run();
+        }
+
         return sendJSON({
           message: "Purchase created",
           purchase: {
-            id: insert.meta?.last_row_id ?? insert.lastInsertRowid,
+            id: purchaseId,
             listing_id: b.listing_id,
             seller_id: String(listing.seller_id),
             price: listing.price
@@ -589,6 +679,298 @@ export default {
         ).bind(String(user.id), `moderate_${status}`, String(listingId), b.reason || "").run();
 
         return sendJSON({ message: "Listing moderated", id: listingId, status });
+      }
+
+      /* ================= SELLER PROFILE UPDATE (city / meetup) ================= */
+      if (path === "/api/seller/profile" && method === "PUT") {
+        const user = await verifyJWT(request);
+        if (!user) return sendJSON({ error: "Unauthorized" }, 401);
+        await ensureSeller(user.id);
+
+        const b = await request.json();
+        const city = cleanVal(b.city, 40);
+        const meetupNote = cleanVal(b.meetup_note, 120);
+
+        await db.prepare(
+          `UPDATE sellers SET city=COALESCE(?, city), meetup_note=COALESCE(?, meetup_note), updated_at=datetime('now')
+           WHERE CAST(user_id AS TEXT)=?`
+        ).bind(city || null, meetupNote || null, String(user.id)).run();
+
+        return sendJSON({ message: "Seller profile updated", city: city || null, meetup_note: meetupNote || null });
+      }
+
+      /* ================= SELLERS DIRECTORY (city-wise search) ================= */
+      if (path === "/api/sellers" && method === "GET") {
+        const city = cleanVal(url.searchParams.get("city"), 40);
+        const limit = Math.min(Number(url.searchParams.get("limit") || 50), 100);
+        let q = `
+          SELECT s.user_id, s.stars, s.review_count, s.badge, s.status, s.total_sales, s.total_revenue,
+                 s.city, s.meetup_note,
+                 (SELECT COUNT(*) FROM listings l
+                  WHERE CAST(l.seller_id AS TEXT)=CAST(s.user_id AS TEXT) AND l.status='available') AS active_listings
+          FROM sellers s WHERE s.status='active'`;
+        const binds = [];
+        if (city) { q += " AND s.city LIKE ?"; binds.push(`%${city}%`); }
+        q += " ORDER BY s.total_sales DESC, s.stars DESC LIMIT ?";
+        binds.push(limit);
+
+        const { results } = await db.prepare(q).bind(...binds).all();
+        return sendJSON((results || []).map(r => ({
+          ...r,
+          avg_rating: Number(r.stars || 0).toFixed(1),
+          seller_verified: r.badge !== "new"
+        })));
+      }
+
+      /* ================= MEETUP: CREATE REQUEST ================= */
+      if (path === "/api/meetups" && method === "POST") {
+        const user = await verifyJWT(request);
+        if (!user) return sendJSON({ error: "Unauthorized" }, 401);
+        if (!rate(`meetup:${user.id}`, 5, 60000)) {
+          return sendJSON({ error: "Too many meetup requests. Try later." }, 429);
+        }
+
+        const b = await request.json();
+        if (!b.listing_id) return sendJSON({ error: "listing_id required" }, 400);
+
+        const listing = await db.prepare("SELECT * FROM listings WHERE id=?").bind(b.listing_id).first();
+        if (!listing) return sendJSON({ error: "Listing not found" }, 404);
+        if (listing.status !== "available") return sendJSON({ error: "Listing not available" }, 409);
+        if (String(listing.seller_id) === String(user.id)) {
+          return sendJSON({ error: "Cannot request meetup on your own listing" }, 400);
+        }
+
+        const city = cleanVal(b.city || listing.city, 40) || "City not specified";
+        const location = cleanVal(b.location, 120);
+        const meetDate = cleanVal(b.meet_date, 20);
+        const meetTime = cleanVal(b.meet_time, 20);
+        const note = cleanVal(b.note, 300);
+        if (!city || !location || !meetDate || !meetTime) {
+          return sendJSON({ error: "city, location, meet_date & meet_time required" }, 400);
+        }
+
+        const insert = await db.prepare(
+          `INSERT INTO meetup_requests (listing_id, buyer_id, seller_id, city, location, meet_date, meet_time, note, status, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,'pending',datetime('now'),datetime('now'))`
+        ).bind(b.listing_id, String(user.id), String(listing.seller_id), city, location, meetDate, meetTime, note).run();
+
+        return sendJSON({
+          message: "Meetup request sent",
+          id: insert.meta?.last_row_id ?? insert.lastInsertRowid,
+          status: "pending"
+        });
+      }
+
+      /* ================= MEETUP: MY REQUESTS ================= */
+      if (path === "/api/meetups/my" && method === "GET") {
+        const user = await verifyJWT(request);
+        if (!user) return sendJSON({ error: "Unauthorized" }, 401);
+
+        const { results } = await db.prepare(
+          `SELECT m.*, l.title AS listing_title, l.uid AS listing_uid, l.price AS listing_price
+           FROM meetup_requests m LEFT JOIN listings l ON l.id=m.listing_id
+           WHERE m.buyer_id=? OR m.seller_id=?
+           ORDER BY m.created_at DESC LIMIT 200`
+        ).bind(String(user.id), String(user.id)).all();
+
+        return sendJSON((results || []).map(r => ({
+          ...r,
+          is_buyer: String(r.buyer_id) === String(user.id),
+          is_seller: String(r.seller_id) === String(user.id)
+        })));
+      }
+
+      /* ================= MEETUP: RESPOND (seller approve/decline) ================= */
+      if (path.startsWith("/api/meetups/") && method === "POST") {
+        const parts = path.split("/");
+        if (parts.length < 5) return sendJSON({ error: "Invalid path" }, 400);
+        const id = Number(parts[3]);
+        const action = parts[4]; // respond / complete
+
+        const user = await verifyJWT(request);
+        if (!user) return sendJSON({ error: "Unauthorized" }, 401);
+
+        const req = await db.prepare("SELECT * FROM meetup_requests WHERE id=?").bind(id).first();
+        if (!req) return sendJSON({ error: "Meetup request not found" }, 404);
+
+        if (action === "respond") {
+          if (String(req.seller_id) !== String(user.id) && String(user.role).toLowerCase() !== "admin") {
+            return sendJSON({ error: "Forbidden" }, 403);
+          }
+          const b = await request.json();
+          const decision = b.decision === "approved" ? "approved" : (b.decision === "declined" ? "declined" : null);
+          if (!decision) return sendJSON({ error: "decision must be approved or declined" }, 400);
+          if (req.status !== "pending") return sendJSON({ error: "Already responded" }, 409);
+
+          await db.prepare(
+            "UPDATE meetup_requests SET status=?, updated_at=datetime('now') WHERE id=?"
+          ).bind(decision, id).run();
+          return sendJSON({ message: `Meetup ${decision}`, id });
+        }
+
+        if (action === "complete") {
+          if (![String(req.buyer_id), String(req.seller_id)].includes(String(user.id))
+              && String(user.role).toLowerCase() !== "admin") {
+            return sendJSON({ error: "Forbidden" }, 403);
+          }
+          if (req.status !== "approved") return sendJSON({ error: "Only approved meetups can be completed" }, 409);
+          await db.prepare(
+            "UPDATE meetup_requests SET status='completed', updated_at=datetime('now') WHERE id=?"
+          ).bind(id).run();
+          return sendJSON({ message: "Meetup marked completed", id });
+        }
+
+        return sendJSON({ error: "Invalid action" }, 400);
+      }
+
+      /* ================= ADMIN: ALL MEETUPS ================= */
+      if (path === "/api/admin/meetups" && method === "GET") {
+        const user = await verifyJWT(request);
+        if (!user || user.role !== "admin") return sendJSON({ error: "Admin only" }, 403);
+
+        const status = url.searchParams.get("status") || "";
+        let q = "SELECT m.*, l.title AS listing_title FROM meetup_requests m LEFT JOIN listings l ON l.id=m.listing_id";
+        const binds = [];
+        if (status) { q += " WHERE m.status=?"; binds.push(status); }
+        q += " ORDER BY m.created_at DESC LIMIT 200";
+
+        const { results } = await db.prepare(q).bind(...binds).all();
+        return sendJSON(results || []);
+      }
+
+      /* ================= SELLER: COMMISSION STATUS ================= */
+      if (path === "/api/commission/me" && method === "GET") {
+        const user = await verifyJWT(request);
+        if (!user) return sendJSON({ error: "Unauthorized" }, 401);
+        await ensureSeller(user.id);
+
+        const seller = await db.prepare(
+          "SELECT pending_commission, hidden FROM sellers WHERE CAST(user_id AS TEXT)=?"
+        ).bind(String(user.id)).first();
+        const { results: payments } = await db.prepare(
+          `SELECT id, amount, status, utr, note, created_at, reviewed_at
+           FROM commission_payments WHERE seller_id=? ORDER BY created_at DESC LIMIT 50`
+        ).bind(String(user.id)).all();
+
+        return sendJSON({
+          pending_commission: Number(seller?.pending_commission || 0),
+          hidden: Number(seller?.hidden || 0),
+          payments: payments || []
+        });
+      }
+
+      /* ================= SELLER: PAY COMMISSION ================= */
+      if (path === "/api/commission/pay" && method === "POST") {
+        const user = await verifyJWT(request);
+        if (!user) return sendJSON({ error: "Unauthorized" }, 401);
+        await ensureSeller(user.id);
+
+        const seller = await db.prepare(
+          "SELECT pending_commission FROM sellers WHERE CAST(user_id AS TEXT)=?"
+        ).bind(String(user.id)).first();
+        const balance = Number(seller?.pending_commission || 0);
+        if (balance <= 0) return sendJSON({ error: "No pending commission to pay" }, 400);
+
+        const b = await request.json().catch(() => ({}));
+        const amount = Math.round(Number(b.amount) * 100) / 100;
+        const utr = cleanVal(b.utr, 60);
+        if (!Number.isFinite(amount) || amount <= 0 || amount > balance) {
+          return sendJSON({ error: `Amount must be between 0 and ${balance}` }, 400);
+        }
+        if (!utr) return sendJSON({ error: "UTR number required" }, 400);
+
+        const insert = await db.prepare(
+          `INSERT INTO commission_payments (seller_id, amount, status, utr, note, created_at)
+           VALUES (?,?, 'submitted', ?, ?, datetime('now'))`
+        ).bind(String(user.id), amount, utr, cleanVal(b.note, 200) || "").run();
+
+        return sendJSON({
+          message: "Commission payment submitted",
+          id: insert.meta?.last_row_id ?? insert.lastInsertRowid,
+          amount,
+          status: "submitted"
+        });
+      }
+
+      /* ================= ADMIN: COMMISSIONS ================= */
+      if (path === "/api/admin/commissions" && method === "GET") {
+        const user = await verifyJWT(request);
+        if (!user || user.role !== "admin") return sendJSON({ error: "Admin only" }, 403);
+
+        const { results: sellers } = await db.prepare(
+          `SELECT user_id, pending_commission, hidden, total_sales, total_revenue, badge
+           FROM sellers WHERE COALESCE(pending_commission,0) > 0 OR hidden=1
+           ORDER BY COALESCE(pending_commission,0) DESC LIMIT 200`
+        ).all();
+        const { results: payments } = await db.prepare(
+          `SELECT cp.*, s.pending_commission AS seller_balance
+           FROM commission_payments cp LEFT JOIN sellers s ON CAST(s.user_id AS TEXT)=cp.seller_id
+           ORDER BY cp.created_at DESC LIMIT 200`
+        ).all();
+
+        return sendJSON({ sellers: sellers || [], payments: payments || [] });
+      }
+
+      /* ================= ADMIN: COMMISSION DECISION ================= */
+      if (path.startsWith("/api/admin/commissions/") && method === "POST") {
+        const user = await verifyJWT(request);
+        if (!user || user.role !== "admin") return sendJSON({ error: "Admin only" }, 403);
+
+        const id = Number(path.split("/").pop());
+        const b = await request.json().catch(() => ({}));
+        const action = b.action; // approve / reject
+        if (!["approve", "reject"].includes(action)) return sendJSON({ error: "Invalid action" }, 400);
+
+        const payment = await db.prepare("SELECT * FROM commission_payments WHERE id=?").bind(id).first();
+        if (!payment) return sendJSON({ error: "Payment not found" }, 404);
+        if (payment.status !== "submitted") return sendJSON({ error: "Already reviewed" }, 409);
+
+        const finalStatus = action === "approve" ? "paid" : "rejected";
+        await db.prepare(
+          `UPDATE commission_payments SET status=?, note=COALESCE(?, note), reviewed_by=?, reviewed_at=datetime('now') WHERE id=?`
+        ).bind(finalStatus, b.note || null, String(user.id), id).run();
+
+        if (action === "approve") {
+          const bal = await db.prepare(
+            "SELECT COALESCE(pending_commission,0) AS bc FROM sellers WHERE CAST(user_id AS TEXT)=?"
+          ).bind(String(payment.seller_id)).first();
+          const newBal = Math.max(0, Math.round((Number(bal?.bc || 0) - Number(payment.amount)) * 100) / 100);
+          await db.prepare(
+            `UPDATE sellers SET pending_commission=?, hidden=CASE WHEN ?<=0 THEN 0 ELSE hidden END, updated_at=datetime('now')
+             WHERE CAST(user_id AS TEXT)=?`
+          ).bind(newBal, newBal, String(payment.seller_id)).run();
+        }
+
+        return sendJSON({ message: `Commission payment ${finalStatus}`, id });
+      }
+
+      /* ================= ADMIN: HIDE / UNHIDE SELLER ================= */
+      if (path.startsWith("/api/admin/sellers/") && method === "POST") {
+        const parts = path.split("/");
+        // [ '', 'api', 'admin', 'sellers', <sellerId>, <action> ]
+        if (parts.length < 6) return sendJSON({ error: "Invalid path" }, 400);
+        const sellerId = String(decodeURIComponent(parts[4] || ""));
+        const action = parts[5] || ""; // hide / unhide
+
+        const user = await verifyJWT(request);
+        if (!user || user.role !== "admin") return sendJSON({ error: "Admin only" }, 403);
+        if (!["hide", "unhide"].includes(action)) return sendJSON({ error: "Invalid action" }, 400);
+
+        const seller = await db.prepare("SELECT * FROM sellers WHERE CAST(user_id AS TEXT)=?").bind(sellerId).first();
+        if (!seller) return sendJSON({ error: "Seller not found" }, 404);
+
+        const b = await request.json().catch(() => ({}));
+        const hidden = action === "hide" ? 1 : 0;
+        await db.prepare(
+          `UPDATE sellers SET hidden=?, updated_at=datetime('now') WHERE CAST(user_id AS TEXT)=?`
+        ).bind(hidden, sellerId).run();
+
+        await db.prepare(
+          `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, created_at)
+           VALUES (?,?,?,?,datetime('now'))`
+        ).bind(String(user.id), `seller_${action}`, sellerId, cleanVal(b.reason, 300) || "").run();
+
+        return sendJSON({ message: `Seller ${action}`, user_id: sellerId, hidden });
       }
 
     } catch (err) {
