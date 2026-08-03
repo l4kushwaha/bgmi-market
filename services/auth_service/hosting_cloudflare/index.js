@@ -121,7 +121,15 @@ function generateOTP(len = 6) {
 }
 
 async function sendOtpEmail(email, otp, env) {
-  const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+  const html = `
+    <h2>BGMI Market</h2>
+    <p>Your OTP is:</p>
+    <h1>${otp}</h1>
+    <p>Valid for 10 minutes.</p>
+  `;
+
+  // Try Brevo first
+  const brevo = await fetch("https://api.brevo.com/v3/smtp/email", {
     method: "POST",
     headers: {
       "api-key": env.BREVO_API_KEY,
@@ -134,20 +142,28 @@ async function sendOtpEmail(email, otp, env) {
       },
       to: [{ email }],
       subject: "BGMI Market Password Reset OTP",
-      htmlContent: `
-        <h2>BGMI Market</h2>
-        <p>Your OTP is:</p>
-        <h1>${otp}</h1>
-        <p>Valid for 10 minutes.</p>
-      `
+      htmlContent: html
     })
   });
+  if (brevo.ok) return;
+  console.error("Brevo OTP Error:", await brevo.text());
 
-  if (!res.ok) {
-    const err = await res.text();
-    console.error("Brevo OTP Error:", err);
-    throw new Error("Failed to send OTP email");
-  }
+  // Fallback: Resend
+  if (!env.RESEND_API_KEY) throw new Error("Brevo " + brevo.status + ": Brevo failed, no Resend fallback configured");
+  const resend = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer " + env.RESEND_API_KEY,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      from: "BGMI Market <onboarding@resend.dev>",
+      to: [email],
+      subject: "BGMI Market Password Reset OTP",
+      html
+    })
+  });
+  if (!resend.ok) throw new Error("Brevo " + brevo.status + " + Resend " + resend.status + ": " + await resend.text());
 }
 
 async function adminOnly(request, env) {
@@ -478,7 +494,7 @@ export default {
           await sendOtpEmail(email, otp, env);
         } catch (e) {
           console.error("OTP send failed:", e);
-          return jsonResponse({ error: "Email service failed" }, 500);
+          return jsonResponse({ error: e.message }, 500);
         }
 
         return jsonResponse({ message: "OTP sent to email" });
