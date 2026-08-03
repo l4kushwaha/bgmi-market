@@ -70,6 +70,17 @@ export default {
         "SELECT role FROM users WHERE id=?"
       ).bind(String(payload.id)).all();
       if (results.length) payload.role = results[0].role;
+      // cache username so admin panel can show seller names
+      try {
+        const uname = String(payload.name || payload.username || "").slice(0, 60);
+        if (uname) {
+          await db.prepare(
+            `INSERT INTO users (id, username, role, created_at)
+             VALUES (?,?,?,datetime('now'))
+             ON CONFLICT(id) DO UPDATE SET username=excluded.username`
+          ).bind(String(payload.id), uname, String(payload.role || "user")).run();
+        }
+      } catch {}
       return payload;
     }
 
@@ -645,10 +656,10 @@ export default {
         if (!user || user.role !== "admin") return sendJSON({ error: "Admin only" }, 403);
 
         const status = url.searchParams.get("status") || "";
-        let q = "SELECT * FROM listings";
+        let q = "SELECT l.*, u.username AS seller_name FROM listings l LEFT JOIN users u ON CAST(u.id AS TEXT)=l.seller_id";
         const binds = [];
-        if (status) { q += " WHERE status=?"; binds.push(status); }
-        q += " ORDER BY created_at DESC LIMIT 200";
+        if (status) { q += " WHERE l.status=?"; binds.push(status); }
+        q += " ORDER BY l.created_at DESC LIMIT 200";
 
         const { results } = await db.prepare(q).bind(...binds).all();
         return sendJSON(results.map(normalize));
@@ -661,24 +672,46 @@ export default {
 
         const listingId = path.split("/")[4];
         const b = await request.json().catch(() => ({}));
-        const status = b.status;
-        if (!["available", "pending", "hidden", "sold"].includes(status)) {
-          return sendJSON({ error: "Invalid status" }, 400);
-        }
 
         const listing = await db.prepare("SELECT * FROM listings WHERE id=?").bind(listingId).first();
         if (!listing) return sendJSON({ error: "Listing not found" }, 404);
 
-        await db.prepare(
-          "UPDATE listings SET status=?, updated_at=datetime('now') WHERE id=?"
-        ).bind(status, listingId).run();
+        const updates = [];
+        const binds = [];
 
-        await db.prepare(
-          `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, created_at)
-           VALUES (?,?,?,?,datetime('now'))`
-        ).bind(String(user.id), `moderate_${status}`, String(listingId), b.reason || "").run();
+        if (b.status !== undefined) {
+          const status = b.status;
+          if (!["available", "pending", "hidden", "sold"].includes(status)) {
+            return sendJSON({ error: "Invalid status" }, 400);
+          }
+          updates.push("status=?");
+          binds.push(status);
+        }
 
-        return sendJSON({ message: "Listing moderated", id: listingId, status });
+        if (b.price !== undefined) {
+          const price = Number(b.price);
+          if (!isFinite(price) || price <= 0 || price > 100000000) {
+            return sendJSON({ error: "Invalid price" }, 400);
+          }
+          updates.push("price=?");
+          binds.push(price);
+        }
+
+        if (!updates.length) return sendJSON({ error: "Nothing to update" }, 400);
+
+        binds.push(listingId);
+        await db.prepare(
+          `UPDATE listings SET ${updates.join(", ")}, updated_at=datetime('now') WHERE id=?`
+        ).bind(...binds).run();
+
+        if (b.status !== undefined) {
+          await db.prepare(
+            `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, created_at)
+             VALUES (?,?,?,?,datetime('now'))`
+          ).bind(String(user.id), `moderate_${b.status}`, String(listingId), b.reason || "").run();
+        }
+
+        return sendJSON({ message: "Listing updated", id: listingId, status: b.status, price: b.price });
       }
 
       /* ================= SELLER PROFILE UPDATE (city / meetup) ================= */
