@@ -128,7 +128,23 @@ async function sendOtpEmail(email, otp, env) {
     <p>Valid for 10 minutes.</p>
   `;
 
-  // Try Brevo first
+  // Preferred: EmailJS (works with any Gmail/Outlook, NO domain verification needed)
+  if (env.EMAILJS_SERVICE_ID && env.EMAILJS_TEMPLATE_ID && env.EMAILJS_PUBLIC_KEY) {
+    const ej = await fetch("https://api.emailjs.com/api/v1.0/email/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        service_id: env.EMAILJS_SERVICE_ID,
+        template_id: env.EMAILJS_TEMPLATE_ID,
+        user_id: env.EMAILJS_PUBLIC_KEY,
+        template_params: { to_email: email, to_name: email, otp }
+      })
+    });
+    if (ej.ok) return;
+    console.error("EmailJS OTP Error:", await ej.text());
+  }
+
+  // Try Brevo second
   const brevo = await fetch("https://api.brevo.com/v3/smtp/email", {
     method: "POST",
     headers: {
@@ -149,7 +165,7 @@ async function sendOtpEmail(email, otp, env) {
   console.error("Brevo OTP Error:", await brevo.text());
 
   // Fallback: Resend
-  if (!env.RESEND_API_KEY) throw new Error("Brevo " + brevo.status + ": Brevo failed, no Resend fallback configured");
+  if (!env.RESEND_API_KEY) throw new Error("EmailJS not configured + Brevo " + brevo.status + " failed");
   const resend = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -494,6 +510,11 @@ export default {
           await sendOtpEmail(email, otp, env);
         } catch (e) {
           console.error("OTP send failed:", e);
+          // Dev fallback: if no email provider works, hand the OTP to the UI directly.
+          // Remove this once a provider (EmailJS/Brevo/Resend) is configured.
+          if (env.DEV_OTP_RETURN !== "0") {
+            return jsonResponse({ message: "Email service unavailable — backup code used", dev_otp: otp });
+          }
           return jsonResponse({ error: e.message }, 500);
         }
 
