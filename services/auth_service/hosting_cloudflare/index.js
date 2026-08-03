@@ -374,6 +374,13 @@ export default {
           return jsonResponse({ error: "Invalid password" }, 401);
         }
 
+        if (user.email_verified === 0) {
+          return jsonResponse({
+            error: "Email not verified. Enter the OTP sent to your email to activate your account.",
+            code: "EMAIL_NOT_VERIFIED"
+          }, 403);
+        }
+
         const access = await jwtSign({ id: user.id, email: user.email, role: user.role || "user", name: user.username }, env.JWT_SECRET, "15m");
         const refresh = await jwtSign({ id: user.id, email: user.email, role: user.role || "user", name: user.username }, env.JWT_SECRET, "7d");
         await logActivity(env, user.id, "login_success");
@@ -423,12 +430,108 @@ export default {
             ? "admin"
             : "user";
         const insert = await env.AUTH_DB.prepare(
-          "INSERT INTO users(email,username,password_hash,role,status,created_at) VALUES(?,?,?,?,?,datetime('now'))"
-        ).bind(email, cleanUser, hash, role, "active").run();
+          "INSERT INTO users(email,username,password_hash,role,status,email_verified,created_at) VALUES(?,?,?,?,?,?,datetime('now'))"
+        ).bind(email, cleanUser, hash, role, "active", 1).run();
 
         const newId = insert.meta?.last_row_id ?? insert.lastInsertRowid;
+
+        // Email verification on signup: only enforced when OTP email can actually be sent.
+        // If sending works -> account created unverified, user must enter OTP before first login.
+        // If email is unavailable (no provider configured) -> account stays active, no lockout.
+        let verifyRequired = false;
+        try {
+          const vOtp = generateOTP();
+          const vExpiry = sqliteDatetime(new Date(Date.now() + 10 * 60000));
+          await env.AUTH_DB.prepare(
+            "DELETE FROM email_verifications WHERE user_id=?"
+          ).bind(newId).run();
+          await env.AUTH_DB.prepare(
+            "INSERT INTO email_verifications(user_id,otp,expires_at) VALUES(?,?,?)"
+          ).bind(newId, vOtp, vExpiry).run();
+          await sendOtpEmail(email, vOtp, env);
+          await env.AUTH_DB.prepare(
+            "UPDATE users SET email_verified=0 WHERE id=?"
+          ).bind(newId).run();
+          verifyRequired = true;
+        } catch (e) {
+          console.error("Verification email failed:", e);
+        }
+
         await logActivity(env, newId, "register");
-        return jsonResponse({ message: "Registered successfully", user: { id: newId, email, role } });
+        return jsonResponse({
+          message: verifyRequired ? "Check your email for OTP to activate your account" : "Registered successfully",
+          user: { id: newId, email, role },
+          verify_required: verifyRequired
+        });
+      }
+
+      // VERIFY EMAIL (signup OTP)
+      if (path === "/api/auth/verify-email" && method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        const { email, otp } = body;
+        if (!email || !otp) return jsonResponse({ error: "Email & OTP required" }, 400);
+        if (!await checkRateLimit(env, `ip:verify:${ip}`, 10, 60)) {
+          return jsonResponse({ error: "Too many attempts. Try later." }, 429);
+        }
+
+        const { results } = await env.AUTH_DB.prepare(
+          "SELECT * FROM users WHERE email=?"
+        ).bind(email).all();
+        if (!results.length) return jsonResponse({ error: "User not found" }, 404);
+
+        const user = results[0];
+        if (user.email_verified === 1) return jsonResponse({ message: "Email already verified" });
+
+        const { results: vres } = await env.AUTH_DB.prepare(
+          "SELECT * FROM email_verifications WHERE user_id=? AND otp=? AND expires_at>datetime('now')"
+        ).bind(user.id, String(otp)).all();
+        if (!vres || vres.length === 0) return jsonResponse({ error: "Invalid or expired OTP" }, 400);
+
+        await env.AUTH_DB.prepare(
+          "UPDATE users SET email_verified=1 WHERE id=?"
+        ).bind(user.id).run();
+        await env.AUTH_DB.prepare(
+          "DELETE FROM email_verifications WHERE user_id=?"
+        ).bind(user.id).run();
+        return jsonResponse({ message: "Email verified successfully" });
+      }
+
+      // RESEND VERIFICATION OTP
+      if (path === "/api/auth/resend-verification" && method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        const { email } = body;
+        if (!email) return jsonResponse({ error: "Email required" }, 400);
+        if (!await checkRateLimit(env, `email:otp:${email}`, 3, 15)) {
+          return jsonResponse({ error: "Too many OTP requests. Try later." }, 429);
+        }
+        if (!await checkRateLimit(env, `ip:otp:${ip}`, 5, 60)) {
+          return jsonResponse({ error: "Too many OTP requests from this device. Try later." }, 429);
+        }
+
+        const { results } = await env.AUTH_DB.prepare(
+          "SELECT * FROM users WHERE email=?"
+        ).bind(email).all();
+        if (!results.length) return jsonResponse({ error: "User not found" }, 404);
+
+        const user = results[0];
+        if (user.email_verified === 1) return jsonResponse({ message: "Email already verified" });
+
+        const otp = generateOTP();
+        const expiry = sqliteDatetime(new Date(Date.now() + 10 * 60000));
+        await env.AUTH_DB.prepare(
+          "DELETE FROM email_verifications WHERE user_id=?"
+        ).bind(user.id).run();
+        await env.AUTH_DB.prepare(
+          "INSERT INTO email_verifications(user_id,otp,expires_at) VALUES(?,?,?)"
+        ).bind(user.id, otp, expiry).run();
+
+        try {
+          await sendOtpEmail(email, otp, env);
+        } catch (e) {
+          console.error("Resend verification OTP failed:", e);
+          return jsonResponse({ error: "Could not send OTP email. Try again later." }, 503);
+        }
+        return jsonResponse({ message: "OTP resent to email" });
       }
 
       // REFRESH TOKEN

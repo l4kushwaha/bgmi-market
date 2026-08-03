@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   role TEXT DEFAULT 'user',    -- user / seller / admin
   status TEXT DEFAULT 'active', -- active / banned
+  email_verified INTEGER DEFAULT 1, -- 0 = must verify OTP before first login
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -29,6 +30,17 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 -- Password Reset OTPs
 -- =========================
 CREATE TABLE IF NOT EXISTS password_resets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  otp TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- =========================
+-- Email Verification OTPs (signup)
+-- =========================
+CREATE TABLE IF NOT EXISTS email_verifications (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
   otp TEXT NOT NULL,
