@@ -3,8 +3,9 @@
  * 💰 BGMI Wallet Service v2.0.0
  * =====================================================
  * ✅ JWT auth everywhere (standalone HS256 verifier, no deps)
- * ✅ Service-charge payment via Razorpay (10% admin fee)
- * ✅ Payment verification (signature check)
+ * ✅ Direct UPI payment (no gateway / no KYC) — 10% admin fee
+ * ✅ Server-side order validation vs marketplace listing
+ * ✅ UTR uniqueness + rate limiting
  * ✅ Escrow release to seller (admin)
  * ✅ Seller balance + withdraw requests
  * ✅ Protected admin earnings report
@@ -89,6 +90,56 @@ export default {
         return u;
       };
 
+      const MARKETPLACE_URL = env.MARKETPLACE_URL || "https://bgmi_marketplace_service.bgmi-gateway.workers.dev";
+
+      /* ---- Server-side listing lookup (validate order_id / seller / price) ---- */
+      async function marketplaceListing(orderId) {
+        try {
+          const n = String(orderId || "").replace(/[^0-9]/g, "").slice(0, 12);
+          if (!/^[0-9]+$/.test(n)) return null;
+          const res = await fetch(`${MARKETPLACE_URL}/api/listings/${n}`);
+          if (!res.ok) return null;
+          return await res.json();
+        } catch (e) {
+          console.error("marketplaceListing error", e && e.message);
+          return null;
+        }
+      }
+
+      /* ---- Simple per-buyer rate limit backed by service_payments ---- */
+      async function rateLimited(userId, seconds, max) {
+        try {
+          const row = await db.prepare(
+            `SELECT COUNT(*) AS c FROM service_payments
+             WHERE buyer_id=? AND created_at > datetime('now','-${Math.floor(seconds)} seconds')`
+          ).bind(String(userId)).first();
+          return Number(row?.c || 0) >= max;
+        } catch {
+          return false;
+        }
+      }
+
+      /* ---- Platform settings (admin-editable from the dashboard) ----
+         Precedence: DB settings table > env secret > built-in default. */
+      async function platformSetting(key) {
+        try {
+          const row = await db.prepare(
+            "SELECT value FROM settings WHERE key=?"
+          ).bind(key).first();
+          if (row && row.value) return String(row.value);
+        } catch {}
+        return null;
+      }
+
+      async function platformUpi() {
+        const dbUpI = await platformSetting("admin_upi_id");
+        const dbName = await platformSetting("admin_upi_name");
+        return {
+          admin_upi_id: dbUpI || env.ADMIN_UPI_ID || "pay@bgmimarket",
+          admin_upi_name: dbName || env.ADMIN_UPI_NAME || "BGMI Market"
+        };
+      }
+
       if (path === "/health" || path === "/") {
         return json({ service: "wallet", version: "2.0.0", status: "running" });
       }
@@ -106,6 +157,7 @@ export default {
         const body = await req.json();
         const buyer_id = String(body.buyer_id || user.id);
         const { order_id, seller_id, amount } = body;
+        const purpose = body.purpose === "half" ? "half" : "full";
 
         if (!order_id || !seller_id || !amount) {
           return json({ error: "missing_fields" }, 400);
@@ -121,20 +173,44 @@ export default {
           return json({ error: "forbidden" }, 403);
         }
 
+        // Rate limit: max 5 payment intents per buyer / 60s
+        if (await rateLimited(user.id, 60, 5)) {
+          return json({ error: "too_many_requests", message: "Too many payment attempts. Try later." }, 429);
+        }
+
+        // Server-side order validation — kill fake order ids, mismatched sellers, underpayment
+        const listing = await marketplaceListing(order_id);
+        if (!listing) {
+          return json({ error: "invalid_order", message: "Order (listing) not found" }, 400);
+        }
+        if (String(listing.seller_id) !== String(seller_id)) {
+          return json({ error: "seller_mismatch", message: "Seller does not match this order" }, 400);
+        }
+        if (purpose === "full") {
+          if (amt !== Number(listing.price)) {
+            return json({ error: "amount_mismatch", message: `Amount must match the listing price (₹${Number(listing.price).toLocaleString("en-IN")})` }, 400);
+          }
+        } else if (amt > Number(listing.price)) {
+          return json({ error: "amount_too_high", message: "Amount cannot exceed the listing price" }, 400);
+        }
+
         const existing = await db.prepare(`
           SELECT * FROM service_payments
           WHERE order_id=? AND status IN ('awaiting_confirmation','submitted','paid','released')
         `).bind(order_id).first();
         if (existing) {
+          const { admin_upi_id: adminUpi, admin_upi_name: adminUpiName } = await platformUpi();
           return json({
             message: "Payment already created",
             payment_id: existing.id,
             order_id: existing.order_id,
-            upi_id: existing.payee_upi || env.ADMIN_UPI_ID || "pay@bgmimarket",
-            upi_name: existing.payee_name || env.ADMIN_UPI_NAME || "BGMI Market",
+            upi_id: existing.payee_upi || adminUpi,
+            upi_name: existing.payee_name || adminUpiName,
             upi_amount: existing.total_amount,
             status: existing.status,
-            utr: existing.utr || null
+            utr: existing.utr || null,
+            purpose: existing.purpose || "full",
+            direct_to_seller: !!existing.payee_upi && existing.payee_upi !== adminUpi
           });
         }
 
@@ -142,8 +218,9 @@ export default {
         const seller_amount = Number(amount) - admin_fee;
 
         /* ---- Resolve payee: seller's own UPI (from profile) or admin fallback ---- */
-        let payee_upi = env.ADMIN_UPI_ID || "pay@bgmimarket";
-        let payee_name = env.ADMIN_UPI_NAME || "BGMI Market";
+        const { admin_upi_id: adminUpiId, admin_upi_name: adminUpiName } = await platformUpi();
+        let payee_upi = adminUpiId;
+        let payee_name = adminUpiName;
         let payee_is_seller = false;
         const verifyBase = env.VERIFY_URL || "https://verification_service.bgmi-gateway.workers.dev";
         try {
@@ -169,8 +246,8 @@ export default {
         await db.prepare(`
           INSERT INTO service_payments
           (id, order_id, buyer_id, seller_id, total_amount,
-           admin_fee, seller_amount, status, utr, payee_upi, payee_name)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'awaiting_confirmation', NULL, ?, ?)
+           admin_fee, seller_amount, status, utr, payee_upi, payee_name, purpose)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'awaiting_confirmation', NULL, ?, ?, ?)
         `).bind(
           payment_id,
           order_id,
@@ -180,7 +257,8 @@ export default {
           admin_fee,
           seller_amount,
           payee_upi,
-          payee_name
+          payee_name,
+          purpose
         ).run();
 
         return json({
@@ -191,6 +269,7 @@ export default {
           upi_amount: Number(amount),
           total_amount: Number(amount),
           status: "awaiting_confirmation",
+          purpose,
           direct_to_seller: payee_is_seller,
           note: payee_is_seller
             ? "Pay the full amount directly to the seller's UPI ID, then submit your UTR / reference number."
@@ -211,6 +290,10 @@ export default {
         const { order_id, utr } = body;
         if (!order_id || !utr) return json({ error: "missing_order_id_or_utr" }, 400);
 
+        if (await rateLimited(user.id, 60, 5)) {
+          return json({ error: "too_many_requests", message: "Too many submissions. Try later." }, 429);
+        }
+
         const pay = await db.prepare(`
           SELECT * FROM service_payments WHERE order_id=? AND status='awaiting_confirmation'
         `).bind(order_id).first();
@@ -222,20 +305,20 @@ export default {
         const cleanUtr = String(utr || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 40);
         if (cleanUtr.length < 6) return json({ error: "invalid_utr" }, 400);
 
+        // UTR uniqueness — one reference number cannot confirm two payments
+        const dup = await db.prepare(`
+          SELECT id FROM service_payments
+          WHERE utr=? AND status IN ('submitted','paid','released')
+        `).bind(cleanUtr).first();
+        if (dup) {
+          return json({ error: "utr_already_used", message: "This UTR has already been used for another payment" }, 409);
+        }
+
         await db.prepare(`
           UPDATE service_payments SET status='submitted', utr=? WHERE order_id=?
         `).bind(cleanUtr, order_id).run();
 
         return json({ message: "Payment submitted for verification", status: "submitted" });
-      }
-
-      /* ==============================================
-         VERIFY PAYMENT (legacy Razorpay callback)
-         Kept for compatibility — the UPI flow uses
-         /pay/submit + admin confirmation instead.
-         ============================================== */
-      if (path === "/pay/verify" && method === "POST") {
-        return json({ error: "use_upi_flow", message: "This flow uses direct UPI payment. Submit your UTR via /pay/submit." }, 400);
       }
 
       /* ==============================================
@@ -479,6 +562,46 @@ export default {
         `).all();
 
         return json(results || []);
+      }
+
+      /* ==============================================
+         ADMIN: PLATFORM SETTINGS (GET) — UPI details
+         ============================================== */
+      if (path === "/admin/settings" && method === "GET") {
+        const admin = await adminOnly();
+        if (!admin) return json({ error: "admin_only" }, 403);
+
+        const { admin_upi_id, admin_upi_name } = await platformUpi();
+        return json({ admin_upi_id, admin_upi_name });
+      }
+
+      /* ==============================================
+         ADMIN: PLATFORM SETTINGS (PUT) — edit UPI details
+         ============================================== */
+      if (path === "/admin/settings" && method === "PUT") {
+        const admin = await adminOnly();
+        if (!admin) return json({ error: "admin_only" }, 403);
+
+        const body = await req.json().catch(() => ({}));
+        const upi_id = String(body.admin_upi_id || "").trim();
+        const upi_name = String(body.admin_upi_name || "").trim();
+
+        if (upi_id && !/^[\w.\-]{2,}@[a-zA-Z]{2,}$/.test(upi_id)) {
+          return json({ error: "invalid_upi_id", message: "UPI ID must look like name@bank" }, 400);
+        }
+        if (upi_id.length > 60 || upi_name.length > 60) {
+          return json({ error: "too_long", message: "Max 60 characters" }, 400);
+        }
+
+        for (const [key, value] of [["admin_upi_id", upi_id], ["admin_upi_name", upi_name]]) {
+          await db.prepare(
+            `INSERT INTO settings (key, value, updated_at) VALUES (?,?,CURRENT_TIMESTAMP)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP`
+          ).bind(key, value).run();
+        }
+
+        const { admin_upi_id: savedId, admin_upi_name: savedName } = await platformUpi();
+        return json({ message: "Settings saved", admin_upi_id: savedId, admin_upi_name: savedName });
       }
 
       return json({ error: "not_found" }, 404);

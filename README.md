@@ -4,7 +4,7 @@ A serverless marketplace for buying & selling BGMI (Battlegrounds Mobile India) 
 
 - **Backend** — Cloudflare Workers + D1 (SQLite), pure JavaScript
 - **Frontend** — Vanilla HTML / CSS / JS, deployed on Vercel from the separate [`bgmi-frontend`](https://github.com/l4kushwaha/bgmi-frontend) repo
-- **Payments** — Razorpay (10% service charge)
+- **Payments** — Direct UPI (no gateway / no KYC). Buyer pays straight to the seller's UPI ID (or platform fallback), submits the UTR, admin verifies & releases escrow. 10% service charge.
 - **Auth** — JWT (access + refresh) with email OTP password reset
 
 No Python, no local runtime required. Everything is fully serverless.
@@ -20,17 +20,17 @@ Browser (Vercel — bgmi-frontend repo)        Cloudflare (workers.dev)
 │  index, login, marketplace │            │  proxies /api/<service>/...     │
 │  sell, chat, wallet, admin │            └───────────┬──────────┬──────────┘
 └────────────────────────────┘                       │          │
-                               ┌─────────────────────▼──┐   ┌───▼─────────────────┐
-                               │ auth-service           │   │ bgmi_marketplace    │
-                               │ (register/login/OTP)   │   │ (wallet, Razorpay)  │
-                               ├────────────────────────┤   ├─────────────────────┤
-                               │ bgmi_marketplace_      │   │ verification_service│
-                               │ service (listings)     │   │ (KYC uploads)       │
-                               ├────────────────────────┤   └─────────────────────┘
-                               │ bgmi_chat_service      │
-                               │ (buy rooms / chat)     │
-                               └────────────────────────┘
-                      each worker backed by its own D1 database
+                               ┌───────────────────▼───┐   ┌────▼─────────────────┐
+                               │ auth-service          │   │ bgmi-marketplace     │
+                               │ (register/login/OTP)  │   │ (wallet, direct UPI) │
+                               ├───────────────────────┤   ├──────────────────────┤
+                               │ bgmi_marketplace_     │   │ verification_service │
+                               │ service (listings)    │   │ (KYC uploads)        │
+                               ├───────────────────────┤   └──────────────────────┘
+                               │ bgmi_chat_service     │
+                               │ (buy rooms / chat)    │
+                               └───────────────────────┘
+                       each worker backed by its own D1 database
 ```
 
 ## Services
@@ -41,7 +41,7 @@ Browser (Vercel — bgmi-frontend repo)        Cloudflare (workers.dev)
 | Auth (register/login/refresh/OTP) | `services/auth_service/hosting_cloudflare/` | `auth-service` | https://auth-service.bgmi-gateway.workers.dev |
 | Marketplace (listings/sellers) | `services/marketplace_service/hosting_cloudflare/` | `bgmi_marketplace_service` | https://bgmi_marketplace_service.bgmi-gateway.workers.dev |
 | Chat (buy requests/rooms) | `services/chat_service/hosting_cloudflare/` | `bgmi_chat_service` | https://bgmi_chat_service.bgmi-gateway.workers.dev |
-| Wallet (Razorpay 10% fee) | `services/wallet_service/` | `bgmi-marketplace` | https://bgmi-marketplace.bgmi-gateway.workers.dev |
+| Wallet (direct UPI 10% fee) | `services/wallet_service/` | `bgmi-marketplace` | https://bgmi-marketplace.bgmi-gateway.workers.dev |
 | Verification (KYC uploads) | `services/verification_service/hosting_cloudflare/` | `verification_service` | https://verification_service.bgmi-gateway.workers.dev |
 
 > ⚠️ **Wallet worker name:** the wallet worker is deployed as `bgmi-marketplace`, **not** `bgmi-wallet-service`. The frontend and gateway use `https://bgmi-marketplace.bgmi-gateway.workers.dev`. Do not rename workers without updating all references.
@@ -51,7 +51,7 @@ Browser (Vercel — bgmi-frontend repo)        Cloudflare (workers.dev)
 ```
 gateway/hosting_cloudflare/       API gateway worker (proxy + health + admin login)
 services/<service>/hosting_cloudflare/   one worker per service (index.js, wrangler.toml, schema.sql)
-services/wallet_service/          wallet worker (Razorpay)
+services/wallet_service/          wallet worker (direct UPI)
 docs/                             architecture, API spec, security policies
 frontend/                         frontend source — IGNORED here, managed by bgmi-frontend repo
 ```
@@ -112,8 +112,9 @@ npx wrangler secret put ADMIN_PASSWORD --name bgmi-gateway
 
 npx wrangler secret put BREVO_API_KEY --name auth-service
 
-npx wrangler secret put RAZORPAY_KEY_ID --name bgmi-marketplace
-npx wrangler secret put RAZORPAY_KEY_SECRET --name bgmi-marketplace
+npx wrangler secret put ADMIN_UPI_ID --name bgmi-marketplace
+npx wrangler secret put ADMIN_UPI_NAME --name bgmi-marketplace
+npx wrangler secret put MARKETPLACE_URL --name bgmi-marketplace
 ```
 
 ## Docs
@@ -125,17 +126,17 @@ npx wrangler secret put RAZORPAY_KEY_SECRET --name bgmi-marketplace
 
 ## Known issues / next steps
 
-- **Wallet/chat payment flow is not end-to-end wired**: the wallet worker exists and
-  verifies Razorpay signatures, but the frontend buy/chat flow does not pass a real
-  `buyer_id`/`amount` and no Razorpay checkout is shown. `wallet.js` also expects a
-  `localStorage.activeRoom` that nothing sets.
+- **Wallet/chat payment flow**: the frontend buy/chat flow calls the wallet worker's
+  `/pay/service-charge` (direct UPI, no gateway), shows a UPI QR, and submits the UTR
+  via `/pay/submit`. The wallet worker validates the order server-side (listing exists,
+  seller matches, amount matches), rate-limits intents, and rejects reused UTRs.
 - **Schema/code drift**: some `schema.sql` files don't match what the worker code
   queries (`rate_limits`, `password_resets`, `sellers`, `chat_rooms`, `service_payments`).
   Migrations must be reconciled and applied with `wrangler d1 migrations apply`.
 - **Fake KYC**: `verification_service` marks every upload as verified with hardcoded
   demo data. Replace with real OCR/face-match or at least admin approve/reject.
-- **No auth on wallet/verification workers**: anyone can hit them today. Add JWT
-  verification before production use.
+- **Price estimator**: `frontend/js/sell.js` falls back to hardcoded prices if the
+  `/api/price-config` fetch fails — keep the server defaults in sync.
 - **Stored XSS**: `frontend/js/marketplace.js` renders listing fields via `innerHTML`.
   Escape or use `textContent`.
 - **Refresh tokens** are not rotated/revoked and lack a `type: "refresh"` claim.

@@ -216,6 +216,15 @@ CREATE INDEX IF NOT EXISTS idx_meetups_seller ON meetup_requests(seller_id);
 CREATE INDEX IF NOT EXISTS idx_meetups_status ON meetup_requests(status);
 
 -- ========================================================
+-- 💰 PRICE CONFIG (admin-editable estimate prices)
+-- ========================================================
+CREATE TABLE IF NOT EXISTS price_config (
+  key TEXT PRIMARY KEY,
+  value REAL NOT NULL DEFAULT 0,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ========================================================
 -- ⚡ INDEXES
 -- ========================================================
 CREATE INDEX IF NOT EXISTS idx_listings_seller_id ON listings(seller_id);

@@ -98,13 +98,20 @@ Body: `{ room_id, message, type?, sensitive? }` → `200 { status:"sent" }`
 ## Wallet worker
 
 ### POST /pay/service-charge — auth
-Body: `{ order_id, buyer_id?, seller_id, amount }`
-→ `200 { razorpay_order_id, razorpay_key, admin_fee, seller_amount }`
-(admin fee = 10% of `amount`). Creates a Razorpay order server-side.
+Body: `{ order_id, buyer_id?, seller_id, amount, purpose? }` (`purpose`: `full`|`half`)
+→ `200 { payment_id, order_id, upi_id, upi_name, upi_amount, total_amount, status, purpose, direct_to_seller, note }`
+Direct UPI (no gateway): payee is the seller's own UPI ID (from their profile) or the
+platform fallback. The worker validates the `order_id` against the marketplace listing
+(real listing, matching seller, amount = listing price for `full`).
 
-### POST /pay/verify — auth
-Body: `{ razorpay_order_id, razorpay_payment_id, razorpay_signature }`
-→ `200 { success:true }` (HMAC-SHA256 signature verified with `RAZORPAY_KEY_SECRET`).
+### POST /pay/submit — auth
+Body: `{ order_id, utr }`
+→ `200 { message, status:"submitted" }`
+UTR is sanitized + must be unique (one reference cannot confirm two payments).
+
+### POST /pay/release — auth (admin)
+Body: `{ order_id }`
+→ `200 { message, seller_id, seller_amount }` (releases escrow to seller).
 
 ### GET /admin/earnings — auth (admin)
 → `200 { total_earnings }`

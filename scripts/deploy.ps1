@@ -1,9 +1,11 @@
-# ============================================================
-# BGMI Marketplace — Deploy to Cloudflare Workers
+﻿# ============================================================
+# BGMI Marketplace - Deploy to Cloudflare Workers
 # Prereq: `wrangler login` (browser OAuth, once per machine)
 # Usage:  powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1
 # ============================================================
-$ErrorActionPreference = "Stop"
+# "Continue" (not "Stop") so native wrangler stderr warnings (2>&1 merges them
+# as ErrorRecords) don't abort the whole script. Deploy-Worker checks exit codes.
+$ErrorActionPreference = "Continue"
 
 $root = Split-Path $PSScriptRoot -Parent
 $secretsDir = Join-Path $PSScriptRoot ".secrets"
@@ -41,38 +43,41 @@ $keysFile = Join-Path $secretsDir "keys.env"
 if (-not (Test-Path $keysFile)) {
   Set-Content -Path $keysFile -Value @"
 BREVO_API_KEY=
-RAZORPAY_KEY_ID=
-RAZORPAY_KEY_SECRET=
+ADMIN_UPI_ID=
+ADMIN_UPI_NAME=
+MARKETPLACE_URL=https://bgmi_marketplace_service.bgmi-gateway.workers.dev
 "@ -Encoding UTF8
-  Write-Host "`n[!] Fill in: $keysFile  (Brevo + Razorpay keys) then re-run this script.`n"
+  Write-Host "`n[!] Fill in: $keysFile  (Brevo key + platform UPI ID) then re-run this script.`n"
   exit 1
 }
 $keysEnv = @{}
 Get-Content $keysFile | ForEach-Object { if ($_ -match "^\s*([^#=]+)=(.*)$") { $keysEnv[$Matches[1].Trim()] = $Matches[2].Trim() } }
 $BREVO_API_KEY = $keysEnv["BREVO_API_KEY"]
-$RAZORPAY_KEY_ID = $keysEnv["RAZORPAY_KEY_ID"]
-$RAZORPAY_KEY_SECRET = $keysEnv["RAZORPAY_KEY_SECRET"]
+$ADMIN_UPI_ID = $keysEnv["ADMIN_UPI_ID"]
+$ADMIN_UPI_NAME = $keysEnv["ADMIN_UPI_NAME"]
+$MARKETPLACE_URL = $keysEnv["MARKETPLACE_URL"]
 
 # ---- 4. wrangler must be logged in ----
 $who = & wrangler whoami 2>&1 | Out-String
 if ($who -match "Not logged in") { throw "Run `wrangler login` first" }
 
-function Put-Secret($name, $value) {
-  if (-not $value) { Write-Host "[skip] secret $name (empty)"; return }
-  Write-Host "[secret] $name -> $name"
-  $value | wrangler secret put $name 2>&1 | Out-Null
-}
-
 function Deploy-Worker($dir, $envName) {
   Write-Host "`n[deploy] $dir (env=$envName)"
-  if ($envName) { Push-Location $dir; try { wrangler deploy --env $envName 2>&1 | Select-String -Pattern "Uploaded|Deployed|Current Version|Worker Startup|Failed|Error" } finally { Pop-Location } }
-  else { Push-Location $dir; try { wrangler deploy 2>&1 | Select-String -Pattern "Uploaded|Deployed|Current Version|Worker Startup|Failed|Error" } finally { Pop-Location } }
+  $oldEA = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    if ($envName) { Push-Location $dir; try { wrangler deploy --env $envName 2>&1 | Select-String -Pattern "Uploaded|Deployed|Current Version|Worker Startup|Failed|Error|error" } finally { Pop-Location } }
+    else { Push-Location $dir; try { wrangler deploy 2>&1 | Select-String -Pattern "Uploaded|Deployed|Current Version|Worker Startup|Failed|Error|error" } finally { Pop-Location } }
+    if ($LASTEXITCODE -ne 0) { throw "wrangler deploy failed (exit $LASTEXITCODE)" }
+  } finally {
+    $ErrorActionPreference = $oldEA
+  }
 }
 
 # ---- 5. Deploy all workers ----
 Deploy-Worker (Join-Path $root "gateway\hosting_cloudflare") $null
 Deploy-Worker (Join-Path $root "services\auth_service\hosting_cloudflare") $null
-Deploy-Worker (Join-Path $root "services\marketplace_service\hosting_cloudflare") $null
+Deploy-Worker (Join-Path $root "services\marketplace_service\hosting_cloudflare") "production"
 Deploy-Worker (Join-Path $root "services\wallet_service") $null
 Deploy-Worker (Join-Path $root "services\verification_service\hosting_cloudflare") $null
 Deploy-Worker (Join-Path $root "services\chat_service\hosting_cloudflare") $null
@@ -87,8 +92,12 @@ foreach ($w in @("bgmi-gateway","auth-service")) {
   $ADMIN_PASSWORD | wrangler secret put ADMIN_PASSWORD --name $w 2>&1 | Out-Null
 }
 $BREVO_API_KEY | wrangler secret put BREVO_API_KEY --name auth-service 2>&1 | Out-Null
-$RAZORPAY_KEY_ID | wrangler secret put RAZORPAY_KEY_ID --name bgmi-marketplace 2>&1 | Out-Null
-$RAZORPAY_KEY_SECRET | wrangler secret put RAZORPAY_KEY_SECRET --name bgmi-marketplace 2>&1 | Out-Null
+if ($ADMIN_UPI_ID)      { $ADMIN_UPI_ID      | wrangler secret put ADMIN_UPI_ID --name bgmi-marketplace 2>&1 | Out-Null }
+else { Write-Host "[skip] ADMIN_UPI_ID (empty) - buyer will fall back to default payee" }
+if ($ADMIN_UPI_NAME)    { $ADMIN_UPI_NAME    | wrangler secret put ADMIN_UPI_NAME --name bgmi-marketplace 2>&1 | Out-Null }
+else { Write-Host "[skip] ADMIN_UPI_NAME (empty)" }
+if ($MARKETPLACE_URL)   { $MARKETPLACE_URL   | wrangler secret put MARKETPLACE_URL --name bgmi-marketplace 2>&1 | Out-Null }
+else { Write-Host "[skip] MARKETPLACE_URL (empty) - wallet will use its default" }
 
 # ---- 7. Apply D1 schemas (remote) ----
 Write-Host "`n[schema] applying D1 migrations..."
@@ -97,6 +106,27 @@ wrangler d1 execute verification_d1 --remote --file (Join-Path $root "services\v
 wrangler d1 execute bgmi_chat_db --remote --file (Join-Path $root "services\chat_service\hosting_cloudflare\schema.sql") 2>&1 | Select-String -Pattern "Executed|error|Error"
 wrangler d1 execute marketplace-db --remote --file (Join-Path $root "services\marketplace_service\hosting_cloudflare\schema.sql") 2>&1 | Select-String -Pattern "Executed|error|Error"
 wrangler d1 execute bgmi_db --remote --file (Join-Path $root "services\wallet_service\schema.sql") 2>&1 | Select-String -Pattern "Executed|error|Error"
+
+# ---- 7b. Idempotent ALTERs (existing D1 DBs won't get new columns from CREATE TABLE) ----
+function Get-D1Count($db, $sql) {
+  $out = wrangler d1 execute $db --remote --json --command $sql 2>&1 | Out-String
+  try { return [int](($out | ConvertFrom-Json)[0].results[0].c) } catch { return -1 }
+}
+$hasPurpose = Get-D1Count "bgmi_db" "SELECT COUNT(*) AS c FROM pragma_table_info('service_payments') WHERE name='purpose'"
+if ($hasPurpose -eq 0) {
+  Write-Host "[migrate] service_payments.purpose column"
+  wrangler d1 execute bgmi_db --remote --command "ALTER TABLE service_payments ADD COLUMN purpose TEXT DEFAULT 'full'" 2>&1 | Select-String -Pattern "Executed|error|Error"
+} elseif ($hasPurpose -lt 0) { Write-Host "[warn] could not check service_payments.purpose - skipping" }
+$hasSettings = Get-D1Count "bgmi_db" "SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name='settings'"
+if ($hasSettings -eq 0) {
+  Write-Host "[migrate] settings table (admin-editable platform UPI)"
+  wrangler d1 execute bgmi_db --remote --command "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)" 2>&1 | Select-String -Pattern "Executed|error|Error"
+} elseif ($hasSettings -lt 0) { Write-Host "[warn] could not check settings table - skipping" }
+$hasPriceCfg = Get-D1Count "marketplace-db" "SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name='price_config'"
+if ($hasPriceCfg -eq 0) {
+  Write-Host "[migrate] price_config table"
+  wrangler d1 execute marketplace-db --remote --command "CREATE TABLE IF NOT EXISTS price_config (key TEXT PRIMARY KEY, value REAL NOT NULL DEFAULT 0, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)" 2>&1 | Select-String -Pattern "Executed|error|Error"
+} elseif ($hasPriceCfg -lt 0) { Write-Host "[warn] could not check price_config - skipping" }
 
 # ---- 8. Seed admin user into auth DB (verification_d1.users) ----
 Write-Host "`n[seed] admin user..."
@@ -120,5 +150,6 @@ Write-Host "`n=============================================="
 Write-Host "DONE. Admin login:"
 Write-Host "  email:    $ADMIN_EMAIL"
 Write-Host "  password: $ADMIN_PASSWORD"
-Write-Host "  endpoint: https://bgmi-gateway.bgmi-gateway.workers.dev/api/auth/admin/login"
+Write-Host "  endpoint: https://bgmi-gateway.bgmi-gateway.workers.dev/api/auth/login"
+Write-Host "  platform UPI: admin dashboard -> Settings tab"
 Write-Host "=============================================="

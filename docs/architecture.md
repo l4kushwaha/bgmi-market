@@ -15,7 +15,7 @@ correct backend Worker and enforces JWT authentication on non-public routes.
 | Auth | `services/auth_service/hosting_cloudflare/index.js` | `/api/auth/{login,register,refresh,forgot-password,reset-password}` | D1 `AUTH_DB` |
 | Marketplace | `services/marketplace_service/hosting_cloudflare/index.js` | `/api/listings*`, `/api/seller/*` | D1 |
 | Chat | `services/chat_service/hosting_cloudflare/index.js` | `/api/chat/{create,room,approve,half-payment,send,my,messages}` | D1 |
-| Wallet | `services/wallet_service/index.js` | `/pay/service-charge`, `/pay/verify`, `/admin/earnings` | D1 + Razorpay API |
+| Wallet | `services/wallet_service/index.js` | `/pay/service-charge`, `/pay/submit`, `/pay/release`, `/admin/earnings` | D1 (direct UPI, no gateway) |
 | Verification | `services/verification_service/hosting_cloudflare/index.js` | `/upload`, `/profile/*`, `/profile/update`, `/stats/*` | D1 + R2 |
 
 ## Request flow
@@ -39,7 +39,7 @@ does this for some flows).
 - **reviews** — listing_id, stars, comment, reply
 - **chat_rooms** — order_id, buyer_id, seller_user_id, status (requested/approved/half_paid/closed), intent (chat/buy)
 - **messages** — room_id, sender_id, type, ciphertext, sensitive
-- **service_payments** — order_id, buyer/seller ids, amounts, razorpay_order_id, status
+- **service_payments** — order_id, buyer/seller ids, amounts, payee UPI, UTR, purpose, status
 - **kyc / verification** — user_id, status, id_image (R2 key)
 
 ## Deployment

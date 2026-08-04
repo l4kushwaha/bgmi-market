@@ -16,8 +16,10 @@ binding = "VERIFICATION_SERVICE"
 service = "verification_service"
 
 # Secrets (set via `wrangler secret put bgmi-marketplace <NAME>`, never commit):
-#   RAZORPAY_KEY_ID     – Razorpay live/test key id
-#   RAZORPAY_KEY_SECRET – Razorpay key secret
+#   JWT_SECRET      – shared JWT signing secret (must match auth-service)
+#   ADMIN_UPI_ID    – platform UPI ID used when the seller has no UPI set
+#   ADMIN_UPI_NAME  – display name for the platform UPI ID
+#   MARKETPLACE_URL – marketplace worker URL (default: bgmi_marketplace_service)
 #
 # NOTE: the deployed wallet worker name is `bgmi-marketplace`
 # (URL: https://bgmi-marketplace.bgmi-gateway.workers.dev).

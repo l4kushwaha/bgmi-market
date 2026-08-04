@@ -141,7 +141,7 @@ async function sendOtpEmail(email, otp, env) {
       })
     });
     if (ej.ok) return;
-    console.error("EmailJS OTP Error:", await ej.text());
+    console.error("EmailJS OTP Error:", ej.status);
   }
 
   // Try Brevo second
@@ -154,7 +154,7 @@ async function sendOtpEmail(email, otp, env) {
     body: JSON.stringify({
       sender: {
         name: "BGMI Market",
-        email: "bgmipop00000036@hotmail.com"
+        email: "bgmipop0000000033@gmail.com"
       },
       to: [{ email }],
       subject: "BGMI Market Password Reset OTP",
@@ -162,7 +162,7 @@ async function sendOtpEmail(email, otp, env) {
     })
   });
   if (brevo.ok) return;
-  console.error("Brevo OTP Error:", await brevo.text());
+  console.error("Brevo OTP Error:", brevo.status);
 
   // Fallback: Resend
   if (!env.RESEND_API_KEY) throw new Error("EmailJS not configured + Brevo " + brevo.status + " failed");
@@ -179,7 +179,7 @@ async function sendOtpEmail(email, otp, env) {
       html
     })
   });
-  if (!resend.ok) throw new Error("Brevo " + brevo.status + " + Resend " + resend.status + ": " + await resend.text());
+  if (!resend.ok) throw new Error("Brevo " + brevo.status + " + Resend " + resend.status);
 }
 
 async function adminOnly(request, env) {
@@ -361,17 +361,17 @@ export default {
           "SELECT * FROM users WHERE email=?"
         ).bind(email).all();
 
-        if (!results || results.length === 0) return jsonResponse({ error: "User not found" }, 404);
-        const user = results[0];
+        const user = results && results.length > 0 ? results[0] : null;
+
+        const DUMMY_HASH = "$2b$10$y37eLNfiRW.KiBkChetdfud0yEzWzBIsiI45YS6QiOpZdxVXfGn6C";
+        const valid = bcrypt.compareSync(password, user ? user.password_hash : DUMMY_HASH);
+        if (!valid || !user) {
+          await logActivity(env, user ? user.id : null, "login_failed");
+          return jsonResponse({ error: "Invalid email or password" }, 401);
+        }
 
         if (user.status === "banned") {
           return jsonResponse({ error: "Account banned. Contact support." }, 403);
-        }
-
-        const valid = bcrypt.compareSync(password, user.password_hash);
-        if (!valid) {
-          await logActivity(env, user.id, "login_failed");
-          return jsonResponse({ error: "Invalid password" }, 401);
         }
 
         if (user.email_verified === 0) {
@@ -477,7 +477,7 @@ export default {
         const { results } = await env.AUTH_DB.prepare(
           "SELECT * FROM users WHERE email=?"
         ).bind(email).all();
-        if (!results.length) return jsonResponse({ error: "User not found" }, 404);
+        if (!results.length) return jsonResponse({ error: "Invalid or expired OTP" }, 400);
 
         const user = results[0];
         if (user.email_verified === 1) return jsonResponse({ message: "Email already verified" });
@@ -511,7 +511,7 @@ export default {
         const { results } = await env.AUTH_DB.prepare(
           "SELECT * FROM users WHERE email=?"
         ).bind(email).all();
-        if (!results.length) return jsonResponse({ error: "User not found" }, 404);
+        if (!results.length) return jsonResponse({ message: "If your email is registered and unverified, a new OTP has been sent." });
 
         const user = results[0];
         if (user.email_verified === 1) return jsonResponse({ message: "Email already verified" });

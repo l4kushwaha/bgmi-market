@@ -4,7 +4,7 @@
 
 - Never commit real secrets. `.gitignore` blocks `.env*` (except `.env.example`).
 - Worker runtime secrets must be set with:
-  `npx wrangler secret put <NAME> --name <worker>` (JWT_SECRET, RAZORPAY_KEY_SECRET, admin credentials…).
+  `npx wrangler secret put <NAME> --name <worker>` (JWT_SECRET, ADMIN_UPI_ID, admin credentials…).
 - `wrangler.toml` files contain **no secrets** — only placeholders/comments. Never add
   real secrets to `wrangler.toml`; use `wrangler secret put` instead.
 
@@ -30,7 +30,11 @@
 
 - Email format + password strength (min length, complexity) validated at register/reset.
 - Auth endpoints are IP rate-limited (login, register, OTP requests).
-- Razorpay callbacks are HMAC-SHA256 signature-verified before marking a payment paid.
+- Payment endpoints: the wallet worker validates every `/pay/service-charge` order
+  server-side against the marketplace listing (real listing, matching seller, exact
+  amount for full payment), rate-limits intents & UTR submissions, and rejects reused
+  UTR numbers. Payee UPI is resolved server-side from the seller's profile — never
+  taken from the client.
 - Marketplace/chat validate required fields and numeric types; unknown ids return 404.
 
 ## 5. Data protection
@@ -52,7 +56,7 @@
 
 - [ ] Rotate `JWT_SECRET` and move it to `wrangler secret put`.
 - [ ] Move admin credentials out of `wrangler.toml` into secrets.
-- [ ] Replace sample Razorpay key with live keys + secret.
+- [ ] Set `ADMIN_UPI_ID` / `ADMIN_UPI_NAME` on the wallet worker (platform fallback payee).
 - [ ] Rotate the sample D1 database ids if they map to real data.
 - [ ] Enforce HTTPS on all worker routes and the Vercel app.
 - [ ] Run `wrangler secret list` per worker to confirm only intended secrets exist.

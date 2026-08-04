@@ -31,15 +31,18 @@ function originAllowed(origin) {
   return false;
 }
 
-function corsHeaders(allowHeaders = "Content-Type, Authorization") {
-  return {
-    "Access-Control-Allow-Origin": "*",
+// Echo the allowed request origin instead of using "*" (a wildcard origin is
+// rejected by browsers for credentialed responses). This gateway authenticates
+// with Bearer tokens, never cookies, so credentials are NOT enabled.
+function corsHeaders(origin, allowHeaders = "Content-Type, Authorization") {
+  const h = {
     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
     "Access-Control-Allow-Headers": allowHeaders,
-    "Access-Control-Allow-Credentials": "true",
     "Access-Control-Max-Age": "86400",
     "Access-Control-Expose-Headers": "Content-Length, Content-Type",
   };
+  if (origin) h["Access-Control-Allow-Origin"] = origin;
+  return h;
 }
 
 function buildServiceUrls(env) {
@@ -139,9 +142,6 @@ function json(data, status, headers) {
   });
 }
 
-// Per-isolate admin login brute-force guard (Map<ip, {t, n}>)
-const adminLoginHits = new Map();
-
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -149,14 +149,15 @@ export default {
     const path = rawPath.replace(/\/+$/, "") || "/";
     const originHeader = request.headers.get("Origin") || "";
     const acHeaders = request.headers.get("Access-Control-Request-Headers") || "Content-Type, Authorization";
-    const cors = corsHeaders(acHeaders);
+
+    if (originHeader && !originAllowed(originHeader)) {
+      return json({ error: "Origin not allowed", origin: originHeader }, 403);
+    }
+
+    const cors = corsHeaders(originHeader || "*", acHeaders);
 
     if (request.method === "OPTIONS") {
       return new Response("OK", { headers: cors });
-    }
-
-    if (originHeader && !originAllowed(originHeader)) {
-      return json({ error: "Origin not allowed", origin: originHeader }, 403, cors);
     }
 
     if (path === "/" || path === "/index.html") {
@@ -175,32 +176,8 @@ export default {
       return json({ message: "gateway debug", originReceived: originHeader || null, version: "3.0.0", services }, 200, cors);
     }
 
-    // --- Admin login ---
-    if (path === "/api/admin/login" && request.method === "POST") {
-      // In-memory per-isolate brute-force guard (per IP)
-      const now = Date.now();
-      const ip = request.headers.get("CF-Connecting-IP") || "unknown";
-      const rl = adminLoginHits.get(ip);
-      if (rl && now - rl.t < 60000 && rl.n >= 5) {
-        return json({ error: "Too many login attempts. Try later." }, 429, cors);
-      }
-      if (!rl || now - rl.t >= 60000) {
-        adminLoginHits.set(ip, { t: now, n: 1 });
-      } else {
-        rl.n++;
-      }
-
-      const { email, password } = await request.json().catch(() => ({}));
-      const ADMIN_EMAIL = env.ADMIN_EMAIL;
-      const ADMIN_PASSWORD = env.ADMIN_PASSWORD;
-      if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
-        return json({ error: "Admin credentials not configured" }, 500, cors);
-      }
-      if (String(email).toLowerCase() === String(ADMIN_EMAIL).toLowerCase() && password === ADMIN_PASSWORD) {
-        return json({ message: "Admin login successful", user: { email, role: "admin" } }, 200, cors);
-      }
-      return json({ error: "Invalid credentials" }, 401, cors);
-    }
+    // --- Admin login is handled by the auth service (/api/auth/login) which
+    //     issues JWTs; no plaintext-credential endpoint lives on the gateway.
 
     // --- Universal proxy ---
     const match = path.match(/^\/api\/([^/]+)(\/.*)?/);
@@ -228,7 +205,7 @@ export default {
         }
 
         const headers = new Headers(proxied.headers);
-        Object.entries(corsHeaders()).forEach(([k, v]) => headers.set(k, v));
+        Object.entries(corsHeaders(originHeader || "*")).forEach(([k, v]) => headers.set(k, v));
 
         return new Response(proxied.body, { status: proxied.status, headers });
       } catch (err) {

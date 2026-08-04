@@ -124,6 +124,60 @@ export default {
       return sendJSON({ service: "marketplace", version: "4.0.0", status: "running" });
     }
 
+    /* ================= PRICE CONFIG (estimate prices, admin-editable) ================= */
+    const PRICE_DEFAULTS = {
+      level_per: 8,            // ₹ per level
+      rank_gold: 10,
+      rank_platinum: 30,
+      rank_ace: 50,
+      rank_diamond: 40,
+      rank_conquer: 200,
+      mythic: 180,
+      legendary: 100,
+      gift: 1000,
+      titles: 100,
+      guns: 300,
+      x_suit: 400,
+      supercar: 1500,
+      ultimate: 250,
+      min_price: 999,
+      round_to: 50,
+      pop_per_point: 1        // ₹ per popularity point
+    };
+
+    if (path === "/api/price-config" && method === "GET") {
+      const { results } = await db.prepare("SELECT key, value FROM price_config").all();
+      const overrides = {};
+      for (const r of results) overrides[r.key] = Number(r.value);
+      return sendJSON({ ...PRICE_DEFAULTS, ...overrides });
+    }
+
+    if (path === "/api/admin/price-config" && method === "PUT") {
+      const user = await verifyJWT(request);
+      if (!user || user.role !== "admin") return sendJSON({ error: "Admin only" }, 403);
+
+      const b = await request.json().catch(() => ({}));
+      const updates = b.config || b;
+      if (!updates || typeof updates !== "object") return sendJSON({ error: "Config object required" }, 400);
+
+      let n = 0;
+      for (const [key, raw] of Object.entries(updates)) {
+        const value = Number(raw);
+        if (!PRICE_DEFAULTS.hasOwnProperty(key)) continue;
+        if (!isFinite(value) || value < 0 || value > 10000000) return sendJSON({ error: `Invalid value for ${key}` }, 400);
+        await db.prepare(
+          `INSERT INTO price_config (key, value, updated_at) VALUES (?,?,datetime('now'))
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=datetime('now')`
+        ).bind(key, value).run();
+        n++;
+      }
+      if (!n) return sendJSON({ error: "No valid keys provided" }, 400);
+      const { results } = await db.prepare("SELECT key, value FROM price_config").all();
+      const overrides = {};
+      for (const r of results) overrides[r.key] = Number(r.value);
+      return sendJSON({ message: `Saved ${n} price(s)`, config: { ...PRICE_DEFAULTS, ...overrides } });
+    }
+
     try {
       /* ================= SELLER VERIFY STATUS (must be before /api/seller/:id) ================= */
       if (path === "/api/seller/verify-status" && method === "GET") {

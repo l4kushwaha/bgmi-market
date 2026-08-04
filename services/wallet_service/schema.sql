@@ -11,7 +11,6 @@ CREATE TABLE IF NOT EXISTS orders (
   total_amount INTEGER,
   admin_commission INTEGER,
   seller_amount INTEGER,
-  razorpay_order_id TEXT,
   status TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -24,11 +23,10 @@ CREATE TABLE IF NOT EXISTS service_payments (
   total_amount REAL NOT NULL,
   admin_fee REAL NOT NULL,
   seller_amount REAL NOT NULL,
-  razorpay_order_id TEXT,
-  razorpay_payment_id TEXT,
   utr TEXT,                             -- UPI transaction reference (direct UPI flow)
   payee_upi TEXT,                       -- UPI ID the buyer paid to (seller's own UPI or admin fallback)
   payee_name TEXT,                      -- display name of payee
+  purpose TEXT DEFAULT 'full',          -- full (full listing price) / half (advance half-pay)
   status TEXT DEFAULT 'created',        -- awaiting_confirmation / submitted / paid / released
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   paid_at DATETIME
@@ -56,3 +54,9 @@ CREATE TABLE IF NOT EXISTS withdraw_requests (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_wr_seller_id ON withdraw_requests(seller_id);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);

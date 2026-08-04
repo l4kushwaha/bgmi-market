@@ -194,28 +194,28 @@ export default {
       }
 
       /* ======================================================
-   GET SINGLE CHAT ROOM
-   ====================================================== */
-if (path === "/api/chat/room" && method === "GET") {
-  const user = await auth();
-  if (!user) return json({ error: "unauthorized" }, 401);
+         GET SINGLE CHAT ROOM
+         ====================================================== */
+      if (path === "/api/chat/room" && method === "GET") {
+        const user = await auth();
+        if (!user) return json({ error: "unauthorized" }, 401);
 
-  const room_id = url.searchParams.get("room_id");
+        const room_id = url.searchParams.get("room_id");
 
-  const room = await db.prepare(`
-    SELECT *
-    FROM chat_rooms
-    WHERE id=?
-  `).bind(room_id).first();
+        const room = await db.prepare(`
+          SELECT *
+          FROM chat_rooms
+          WHERE id=?
+        `).bind(room_id).first();
 
-  if (!room) return json({ error: "room_not_found" }, 404);
+        if (!room) return json({ error: "room_not_found" }, 404);
 
-  if (![room.buyer_id, room.seller_user_id].includes(String(user.id))) {
-    return json({ error: "forbidden" }, 403);
-  }
+        if (![room.buyer_id, room.seller_user_id].includes(String(user.id))) {
+          return json({ error: "forbidden" }, 403);
+        }
 
-  return json(room);
-}
+        return json(room);
+      }
 
 
       /* ======================================================
