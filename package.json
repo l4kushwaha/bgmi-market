@@ -1,0 +1,23 @@
+{
+  "name": "bgmi-market",
+  "private": true,
+  "version": "1.0.0",
+  "description": "BGMI Market - Serverless marketplace for BGMI accounts",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint . --ext .js,.mjs --ignore-path .gitignore",
+    "lint:fix": "eslint . --ext .js,.mjs --ignore-path .gitignore --fix"
+  },
+  "devDependencies": {
+    "vitest": "^1.0.0",
+    "@vitest/coverage-v8": "^1.0.0",
+    "eslint": "^8.56.0",
+    "jsdom": "^24.0.0",
+    "happy-dom": "^12.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

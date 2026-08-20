@@ -11,8 +11,8 @@ id = "729f93be021741a480285c02a21b531f"
 # D1 Database for verification & profile info
 [[d1_databases]]
 binding = "VERIFICATION_DB"
-database_name = "verification_d1"
-database_id = "f727a3c3-121e-487b-934b-2c66b1abbf29"
+database_name = "verification_db"
+database_id = "0e46dbce-ea45-4252-8128-7346ffb060d7"
 
 [vars]
 AUTH_SERVICE_URL = "https://auth-service.bgmi-gateway.workers.dev/api/auth"

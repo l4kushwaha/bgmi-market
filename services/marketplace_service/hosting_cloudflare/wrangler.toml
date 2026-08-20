@@ -9,9 +9,9 @@ compatibility_date = "2025-11-12"
 # D1 DATABASE BINDING
 # =====================================================
 [[d1_databases]]
-binding = "marketplace_db"
-database_name = "marketplace-db"
-database_id = "71eff31d-c376-4bb5-aa6e-edc2fe5d1afa"
+binding = "MARKETPLACE_DB"
+database_name = "marketplace_db"
+database_id = "fdfb3df6-92b2-4931-845d-3b926915f520"
 
 # =====================================================
 # CORE SERVICE ENVIRONMENT VARIABLES
@@ -50,9 +50,9 @@ ENVIRONMENT = "local"
 DEBUG = "true"
 
 [[env.local.d1_databases]]
-binding = "marketplace_db"
-database_name = "bgmi_marketplace_db"
-database_id = "71eff31d-c376-4bb5-aa6e-edc2fe5d1afa"
+binding = "MARKETPLACE_DB"
+database_name = "marketplace_db"
+database_id = "fdfb3df6-92b2-4931-845d-3b926915f520"
 
 [env.production.vars]
 ENVIRONMENT = "production"
@@ -68,9 +68,9 @@ WALLET_ESCROW_ENABLED = "true"
 CHAT_NOTIFICATIONS_ENABLED = "true"
 
 [[env.production.d1_databases]]
-binding = "marketplace_db"
-database_name = "bgmi_marketplace_db"
-database_id = "71eff31d-c376-4bb5-aa6e-edc2fe5d1afa"
+binding = "MARKETPLACE_DB"
+database_name = "marketplace_db"
+database_id = "fdfb3df6-92b2-4931-845d-3b926915f520"
 
 # =====================================================
 # Deploy:  npx wrangler deploy --env production

@@ -4,8 +4,8 @@ compatibility_date = "2025-11-08"
 
 [[d1_databases]]
 binding = "AUTH_DB"
-database_name = "verification_d1"
-database_id = "f727a3c3-121e-487b-934b-2c66b1abbf29"
+database_name = "auth_db"
+database_id = "4f0ce6f4-2909-4af7-924e-d04289d8a350"
 
 # Secrets (set via `wrangler secret put auth-service <NAME>`, never commit):
 #   JWT_SECRET     – shared signing secret (identical across all workers)

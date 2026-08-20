@@ -3,9 +3,9 @@ main = "index.js"
 compatibility_date = "2025-11-11"
 
 [[d1_databases]]
-binding = "chat_db"
-database_name = "bgmi_chat_db"
-database_id = "ce6830fc-d9b7-4977-95e2-47dc51f509e0"
+binding = "CHAT_DB"
+database_name = "chat_db"
+database_id = "bcbf4bae-bbed-423c-9fb0-1c92ad718062"
 
 [[kv_namespaces]]
 binding = "chat_media"
