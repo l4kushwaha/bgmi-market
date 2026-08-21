@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs';
 import * as jose from 'jose';
+import { oauthStart, oauthCallback } from './oauth-routes.js';
 
 const securityHeaders = {
   'X-Content-Type-Options': 'nosniff',
@@ -286,6 +287,18 @@ export default {
         return jsonResponse({ status: 'ok', service: 'auth' });
       }
 
+      // =============================================
+      // OAUTH (google / facebook)
+      // =============================================
+      if (path.startsWith('/api/auth/oauth/')) {
+        const parts = path.split('/');
+        const provider = parts[4];
+        const origin = url.origin;
+        return parts[5] === 'callback'
+          ? await oauthCallback(env, provider, url, origin)
+          : await oauthStart(env, provider, origin);
+      }
+
       const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
 
       // =============================================
@@ -407,7 +420,7 @@ export default {
         if (!await checkRateLimit(env, `ip:login:${ip}`, 20, 60)) {
           return jsonResponse({ error: 'Too many login attempts. Try later.' }, 429);
         }
-        if (!await checkRateLimit(env, `acc:login:${String(email).toLowerCase()}`, 5, 300)) {
+        if (!await checkRateLimit(env, `acc:login:${String(email).toLowerCase()}`, 15, 60)) {
           return jsonResponse({ error: 'Too many attempts for this account. Try later.' }, 429);
         }
 
@@ -418,13 +431,13 @@ export default {
         }
 
         if (email.toLowerCase() === ADMIN_EMAIL.toLowerCase() && password === ADMIN_PASSWORD) {
-          const access = await jwtSign({ id: 0, email, role: 'admin', name: 'Admin', type: 'access' }, env.JWT_SECRET, '15m');
-          const refresh = await jwtSign({ id: 0, email, role: 'admin', name: 'Admin', type: 'refresh' }, env.JWT_SECRET, '7d');
+          const access = await jwtSign({ id: 0, email, role: 'admin', name: 'Admin', type: 'access' }, env.JWT_SECRET, '7d');
+          const refresh = await jwtSign({ id: 0, email, role: 'admin', name: 'Admin', type: 'refresh' }, env.JWT_SECRET, '30d');
           return jsonResponse({ message: 'Admin login', user: { id: 0, email, role: 'admin', name: 'Admin' }, access_token: access, refresh_token: refresh });
         }
 
         const { results } = await env.AUTH_DB.prepare(
-          'SELECT * FROM users WHERE email=?'
+          'SELECT * FROM users WHERE email=? COLLATE NOCASE'
         ).bind(email).all();
 
         const user = results && results.length > 0 ? results[0] : null;
@@ -447,8 +460,8 @@ export default {
           }, 403);
         }
 
-        const access = await jwtSign({ id: user.id, email: user.email, role: user.role || 'user', name: user.username, type: 'access' }, env.JWT_SECRET, '15m');
-        const refresh = await jwtSign({ id: user.id, email: user.email, role: user.role || 'user', name: user.username, type: 'refresh' }, env.JWT_SECRET, '7d');
+        const access = await jwtSign({ id: user.id, email: user.email, role: user.role || 'user', name: user.username, type: 'access' }, env.JWT_SECRET, '7d');
+        const refresh = await jwtSign({ id: user.id, email: user.email, role: user.role || 'user', name: user.username, type: 'refresh' }, env.JWT_SECRET, '30d');
         
         // Store refresh token in database
         await storeRefreshToken(env, user.id, refresh, '7d');
@@ -489,7 +502,7 @@ export default {
         }
 
         const { results: ex } = await env.AUTH_DB.prepare(
-          'SELECT * FROM users WHERE email=?'
+          'SELECT * FROM users WHERE email=? COLLATE NOCASE'
         ).bind(email).all();
 
         if (ex.length > 0) {return jsonResponse({ error: 'User already exists' }, 409);}
@@ -545,7 +558,7 @@ export default {
         }
 
         const { results } = await env.AUTH_DB.prepare(
-          'SELECT * FROM users WHERE email=?'
+          'SELECT * FROM users WHERE email=? COLLATE NOCASE'
         ).bind(email).all();
         if (!results.length) {return jsonResponse({ error: 'Invalid or expired OTP' }, 400);}
 
@@ -579,7 +592,7 @@ export default {
         }
 
         const { results } = await env.AUTH_DB.prepare(
-          'SELECT * FROM users WHERE email=?'
+          'SELECT * FROM users WHERE email=? COLLATE NOCASE'
         ).bind(email).all();
         if (!results.length) {return jsonResponse({ message: 'If your email is registered and unverified, a new OTP has been sent.' });}
 
@@ -625,8 +638,8 @@ export default {
         if (payload.id === 0) {
           // Admin: rotate refresh token
           await revokeRefreshToken(env, refresh_token);
-          const newRefresh = await jwtSign({ id: 0, email: payload.email, role: 'admin', name: 'Admin', type: 'refresh' }, env.JWT_SECRET, '7d');
-          const access = await jwtSign({ id: 0, email: payload.email, role: 'admin', name: 'Admin', type: 'access' }, env.JWT_SECRET, '15m');
+          const newRefresh = await jwtSign({ id: 0, email: payload.email, role: 'admin', name: 'Admin', type: 'refresh' }, env.JWT_SECRET, '30d');
+          const access = await jwtSign({ id: 0, email: payload.email, role: 'admin', name: 'Admin', type: 'access' }, env.JWT_SECRET, '7d');
           return jsonResponse({ access_token: access, refresh_token: newRefresh });
         }
 
@@ -651,7 +664,7 @@ export default {
 
         // Rotate refresh token: revoke old, issue new
         await revokeRefreshToken(env, refresh_token);
-        const newRefresh = await jwtSign({ id: user.id, email: user.email, role: user.role || 'user', name: user.username, type: 'refresh' }, env.JWT_SECRET, '7d');
+        const newRefresh = await jwtSign({ id: user.id, email: user.email, role: user.role || 'user', name: user.username, type: 'refresh' }, env.JWT_SECRET, '30d');
         await storeRefreshToken(env, user.id, newRefresh, '7d');
         
         const access = await jwtSign(
@@ -677,7 +690,7 @@ export default {
         }
 
         const { results } = await env.AUTH_DB.prepare(
-          'SELECT id FROM users WHERE email=?'
+          'SELECT id FROM users WHERE email=? COLLATE NOCASE'
         ).bind(email).all();
 
         if (!results || results.length === 0)
