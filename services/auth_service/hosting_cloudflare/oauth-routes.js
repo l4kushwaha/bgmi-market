@@ -21,7 +21,8 @@ export async function oauthStart(env, provider, origin) {
     }, 501);
   }
   const redirect = origin + '/api/auth/oauth/' + provider + '/callback';
-  const state = crypto.randomUUID().replace(/-/g, '');
+  const ts = Date.now();
+  const state = await signState(ts, env);
   const u = provider === 'google'
     ? 'https://accounts.google.com/o/oauth2/v2/auth?client_id=' + cid +
       '&redirect_uri=' + encodeURIComponent(redirect) +
@@ -34,6 +35,8 @@ export async function oauthStart(env, provider, origin) {
 export async function oauthCallback(env, provider, url, origin) {
   try {
     const code = url.searchParams.get('code');
+    const st = url.searchParams.get('state');
+    if (!st || !(await checkState(st, env))) return jr({ error: 'bad_state_csrf' }, 403);
     if (!code) return jr({ error: 'no_code' }, 400);
 
     const cid = provider === 'google' ? env.GOOGLE_CLIENT_ID : env.FACEBOOK_CLIENT_ID;
@@ -88,7 +91,8 @@ export async function oauthCallback(env, provider, url, origin) {
     if (row.status === 'banned') return jr({ error: 'Account banned' }, 403);
 
     // token bana ke frontend par bhejo
-    const secret = env.JWT_SECRET || 'dev-secret-change-me';
+    if (!env.JWT_SECRET) return jr({ error: 'server_config' }, 500);
+    const secret = env.JWT_SECRET;
     const access = await jwtSignLocal({ sub: row.id, email: row.email, role: row.role }, secret, '7d');
     const refresh = await jwtSignLocal({ sub: row.id, type: 'refresh' }, secret, '30d');
 
@@ -113,4 +117,22 @@ async function jwtSignLocal(payload, secret, expires) {
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data));
   return data + '.' + btoa(String.fromCharCode(...new Uint8Array(sig))).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+
+// state sign/verify — CSRF rokne ke liye
+async function hmac(data, secret) {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const s = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data));
+  return btoa(String.fromCharCode(...new Uint8Array(s))).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+async function signState(ts, env) {
+  return ts + '.' + (await hmac(String(ts), env.JWT_SECRET || String(env.GOOGLE_CLIENT_ID || 'x')));
+}
+async function checkState(state, env) {
+  try {
+    const [ts] = state.split('.');
+    if (Date.now() - Number(ts) > 10 * 60 * 1000) return false; // 10 min purana = invalid
+    const expected = await signState(Number(ts), env);
+    return state === expected;
+  } catch { return false; }
 }
