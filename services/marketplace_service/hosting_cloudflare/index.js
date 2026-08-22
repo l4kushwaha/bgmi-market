@@ -419,6 +419,22 @@ export default {
       }
 
       /* ================= EDIT LISTING ================= */
+      if (path.startsWith('/api/listings/') && method === 'PATCH') {
+        const user = await verifyJWT(request);
+        if (!user) {return sendJSON({ error: 'Unauthorized' }, 401);}
+        const listingId = path.split('/')[3];
+        const listing = await db.prepare('SELECT * FROM listings WHERE id=? AND deleted_at IS NULL').bind(listingId).first();
+        if (!listing) {return sendJSON({ error: 'Listing not found' }, 404);}
+        if (String(listing.seller_id) !== String(user.seller_id || user.id)
+            && String(user.role).toLowerCase() !== 'admin') {
+          return sendJSON({ error: 'Forbidden' }, 403);}
+        const b = await request.json().catch(() => ({}));
+        const st = String(b.status || '');
+        if (!['available','sold','hidden'].includes(st)) {return sendJSON({ error: 'Invalid status' }, 400);}
+        await db.prepare("UPDATE listings SET status=?, updated_at=datetime('now') WHERE id=?").bind(st, listingId).run();
+        return sendJSON({ message: 'Status updated', id: Number(listingId), status: st });
+      }
+
       if (path.startsWith('/api/listings/') && method === 'PUT') {
         const user = await verifyJWT(request);
         if (!user) {return sendJSON({ error: 'Unauthorized' }, 401);}
@@ -823,7 +839,8 @@ export default {
         const status = url.searchParams.get('status') || '';
         let q = 'SELECT l.*, u.username AS seller_name FROM listings l LEFT JOIN users u ON CAST(u.id AS TEXT)=l.seller_id';
         const binds = [];
-        if (status) { q += ' WHERE l.status=?'; binds.push(status); }
+        q += ' WHERE l.deleted_at IS NULL';
+        if (status) { q += ' AND l.status=?'; binds.push(status); }
         q += ' ORDER BY l.created_at DESC LIMIT 200';
 
         const { results } = await db.prepare(q).bind(...binds).all();

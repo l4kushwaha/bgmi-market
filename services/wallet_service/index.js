@@ -76,7 +76,7 @@ export default {
       const url = new URL(req.url);
       const path = url.pathname;
       const method = req.method;
-      const db = env.bgmi_db;
+      const db = env.DB;
 
       const authUser = async () => {
         const h = req.headers.get('Authorization');
