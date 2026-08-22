@@ -1,16 +1,22 @@
 /**
  * =====================================================
- * 🛒 BGMI Marketplace Service v4.0.0
+ * ðŸ›’ BGMI Marketplace Service v4.0.0
  * =====================================================
- * ✅ Listings CRUD + single listing GET
- * ✅ Reviews (create + seller aggregates)
- * ✅ Purchases (escrow tracking)
- * ✅ Admin moderation (list all, moderate status)
- * ✅ JWT Auth (shared secret)
+ * âœ… Listings CRUD + single listing GET
+ * âœ… Reviews (create + seller aggregates)
+ * âœ… Purchases (escrow tracking)
+ * âœ… Admin moderation (list all, moderate status)
+ * âœ… JWT Auth (shared secret)
  * =====================================================
  */
 
 export default {
+  async scheduled(event, env, ctx) {
+    try {
+      const r = await env.db.prepare("DELETE FROM listings WHERE deleted_at IS NOT NULL AND deleted_at < datetime('now','-10 day')").run();
+      console.log('cron purge listings:', r.meta.changes);
+    } catch (e) { console.error('purge error:', e.message); }
+  },
   async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -29,7 +35,7 @@ export default {
 
     const CORS_HEADERS = {
       'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Origin': 'https://bgmi-frontend.vercel.app', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
       'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type,Authorization',
       ...SECURITY_HEADERS
@@ -52,6 +58,7 @@ export default {
       return true;
     };
     const cleanVal = (v, max) => String(v ?? '').replace(/[<>&'"`]/g, '').trim().slice(0, max);
+    const safeParseArr = (v) => { try { const a = typeof v === 'string' ? JSON.parse(v) : v; return Array.isArray(a) ? a : []; } catch { return []; } };
 
     const safeJSON = (v, d = []) => {
       try { return JSON.parse(v || '[]'); } catch { return d; }
@@ -160,7 +167,7 @@ export default {
 
     /* ================= PRICE CONFIG (estimate prices, admin-editable) ================= */
     const PRICE_DEFAULTS = {
-      level_per: 8,            // ₹ per level
+      level_per: 8,            // â‚¹ per level
       rank_gold: 10,
       rank_platinum: 30,
       rank_ace: 50,
@@ -176,7 +183,7 @@ export default {
       ultimate: 250,
       min_price: 999,
       round_to: 50,
-      pop_per_point: 1        // ₹ per popularity point
+      pop_per_point: 1        // â‚¹ per popularity point
     };
 
     if (path === '/api/price-config' && method === 'GET') {
@@ -254,7 +261,7 @@ export default {
         }
 
         const listings = await db.prepare(
-          "SELECT * FROM listings WHERE CAST(seller_id AS TEXT)=? AND status='available'"
+          "SELECT * FROM listings WHERE CAST(seller_id AS TEXT)=? AND status='available' AND deleted_at IS NULL"
         ).bind(sellerId).all();
 
         const reviews = await db.prepare(
@@ -286,7 +293,7 @@ export default {
 
       /* ================= GET LISTINGS ================= */
       if (path === '/api/listings' && method === 'GET') {
-        let q = "SELECT l.*, s.city AS seller_city FROM listings l LEFT JOIN sellers s ON CAST(s.user_id AS TEXT)=l.seller_id WHERE l.status='available' AND COALESCE(s.hidden,0)=0";
+        let q = "SELECT l.*, s.city AS seller_city FROM listings l LEFT JOIN sellers s ON CAST(s.user_id AS TEXT)=l.seller_id WHERE l.status='available' AND l.deleted_at IS NULL AND COALESCE(s.hidden,0)=0";
         const binds = [];
         const search = url.searchParams.get('q');
         const filter = url.searchParams.get('filter');
@@ -334,7 +341,7 @@ export default {
       /* ================= GET SINGLE LISTING ================= */
       if (path.startsWith('/api/listings/') && method === 'GET' && !path.includes('/create')) {
         const listingId = Number(path.split('/')[3]);
-        const listing = await db.prepare('SELECT * FROM listings WHERE id=?').bind(listingId).first();
+        const listing = await db.prepare('SELECT * FROM listings WHERE id=? AND deleted_at IS NULL').bind(listingId).first();
         if (!listing) {return sendJSON({ error: 'Listing not found' }, 404);}
         return sendJSON(normalize(listing));
       }
@@ -353,25 +360,19 @@ export default {
         }
 
         const b = await request.json();
-        if (!b.title || !b.price) {
-          return sendJSON({ error: 'title & price required' }, 400);
-        }
 
         const category = b.category === 'popularity' ? 'popularity' : 'account';
         const cleanUid = category === 'account'
           ? String(b.uid || '').replace(/[^0-9]/g, '').slice(0, 12)
           : '';
-        if (category === 'account' && !/^[0-9]{1,12}$/.test(cleanUid)) {return sendJSON({ error: 'Invalid UID' }, 400);}
-        const cleanTitle = String(b.title).replace(/[<>&'"`]/g, '').trim().slice(0, 80);
-        if (!cleanTitle) {return sendJSON({ error: 'Title required' }, 400);}
-        const price = Number(b.price);
-        if (!Number.isFinite(price) || price < 1 || price > 10000000) {
-          return sendJSON({ error: 'Price must be between ₹1 and ₹10,000,000' }, 400);
-        }
-        const points = category === 'popularity' ? (Number(b.points) || 0) : 0;
-        if (category === 'popularity' && (points < 1 || points > 10000000)) {
-          return sendJSON({ error: 'Popularity points must be between 1 and 10,000,000' }, 400);
-        }
+        let cleanTitle = String(b.title || '').replace(/[<>&'"`]/g, '').trim().slice(0, 80);
+        if (!cleanTitle) {cleanTitle = category === 'popularity' ? 'BGMI Popularity Package' : 'BGMI Account';}
+        let price = Number(b.price);
+        if (!Number.isFinite(price) || price < 1) {price = 1;}
+        if (price > 10000000) {price = 10000000;}
+        let points = category === 'popularity' ? (Number(b.points) || 0) : 0;
+        if (category === 'popularity' && points < 1) {points = 100;}
+        if (points > 10000000) {points = 10000000;}
         const cleanDesc = String(b.description || '').replace(/[<>&'"`]/g, '').trim().slice(0, 1000);
         const deliveryTime = String(b.delivery_time || '').replace(/[<>&'"`]/g, '').trim().slice(0, 60);
         const meetupAvailable = b.meetup_available === 1 || b.meetup_available === true || String(b.meetup_available) === '1' ? 1 : 0;
@@ -423,7 +424,7 @@ export default {
         if (!user) {return sendJSON({ error: 'Unauthorized' }, 401);}
 
         const listingId = path.split('/')[3];
-        const listing = await db.prepare('SELECT * FROM listings WHERE id=?').bind(listingId).first();
+        const listing = await db.prepare('SELECT * FROM listings WHERE id=? AND deleted_at IS NULL').bind(listingId).first();
         if (!listing) {return sendJSON({ error: 'Listing not found' }, 404);}
 
         if (String(listing.seller_id) !== String(user.seller_id || user.id)
@@ -434,7 +435,7 @@ export default {
         const b = await request.json();
         const price = Number(b.price);
         if (b.price !== undefined && (!Number.isFinite(price) || price < 1 || price > 10000000)) {
-          return sendJSON({ error: 'Price must be between ₹1 and ₹10,000,000' }, 400);
+          return sendJSON({ error: 'Price must be between â‚¹1 and â‚¹10,000,000' }, 400);
         }
         const cleanTitle = b.title !== undefined ? cleanVal(b.title, 80) : undefined;
         if (b.title !== undefined && !cleanTitle) {return sendJSON({ error: 'Title required' }, 400);}
@@ -447,20 +448,20 @@ export default {
             updated_at=datetime('now')
            WHERE id=?`
         ).bind(
-          cleanTitle ?? b.title,
-          (cleanDesc ?? b.description) || '',
-          price || b.price || 0,
-          b.level || 0,
-          b.highest_rank || '',
-          JSON.stringify(b.mythic_items || []),
-          JSON.stringify(b.legendary_items || []),
-          JSON.stringify(b.honor_gift ?? (b.gift_items || [])),
-          JSON.stringify(b.upgraded_guns || []),
-          JSON.stringify(b.titles || []),
-          JSON.stringify(b.x_suit || []),
-          JSON.stringify(b.supercar || []),
-          JSON.stringify(b.ultimate || []),
-          JSON.stringify(b.images || []),
+          cleanTitle ?? b.title ?? listing.title,
+          (cleanDesc ?? b.description) || listing.description || '',
+          price || b.price || Number(listing.price) || 0,
+          b.level !== undefined ? (b.level || 0) : (listing.level ?? 0),
+          b.highest_rank !== undefined ? (b.highest_rank || '') : (listing.highest_rank || ''),
+          JSON.stringify(b.mythic_items !== undefined ? b.mythic_items : safeParseArr(listing.mythic_items)),
+          JSON.stringify(b.legendary_items !== undefined ? b.legendary_items : safeParseArr(listing.legendary_items)),
+          JSON.stringify(b.honor_gift !== undefined ? b.honor_gift : (b.gift_items !== undefined ? b.gift_items : safeParseArr(listing.honor_gift))),
+          JSON.stringify(b.upgraded_guns !== undefined ? b.upgraded_guns : safeParseArr(listing.upgraded_guns)),
+          JSON.stringify(b.titles !== undefined ? b.titles : safeParseArr(listing.titles)),
+          JSON.stringify(b.x_suit !== undefined ? b.x_suit : safeParseArr(listing.x_suit)),
+          JSON.stringify(b.supercar !== undefined ? b.super_car ?? b.supercar : safeParseArr(listing.supercar)),
+          JSON.stringify(b.ultimate !== undefined ? b.ultimate : safeParseArr(listing.ultimate)),
+          JSON.stringify(b.images !== undefined ? b.images : safeParseArr(listing.images)),
           String(b.delivery_time || '').replace(/[<>&'"`]/g, '').trim().slice(0, 60) || null,
           (b.meetup_available === 1 || b.meetup_available === true || String(b.meetup_available) === '1') ? 1 : 0,
           cleanVal(b.city, 40) || null,
@@ -476,7 +477,7 @@ export default {
         if (!user) {return sendJSON({ error: 'Unauthorized' }, 401);}
 
         const listingId = path.split('/')[3];
-        const listing = await db.prepare('SELECT * FROM listings WHERE id=?').bind(listingId).first();
+        const listing = await db.prepare('SELECT * FROM listings WHERE id=? AND deleted_at IS NULL').bind(listingId).first();
         if (!listing) {return sendJSON({ error: 'Listing not found' }, 404);}
 
         if (String(listing.seller_id) !== String(user.seller_id || user.id)
@@ -484,8 +485,67 @@ export default {
           return sendJSON({ error: 'Forbidden' }, 403);
         }
 
-        await db.prepare('DELETE FROM listings WHERE id=?').bind(listingId).run();
+        await db.prepare("UPDATE listings SET deleted_at=datetime('now') WHERE id=?").bind(listingId).run();
         return sendJSON({ message: 'Listing deleted' });
+      }
+
+      /* ================= MY ORDERS (buyer + seller views) ================= */
+      if (path === '/api/purchases' && method === 'GET') {
+        const user = await verifyJWT(request);
+        if (!user) {return sendJSON({ error: 'Unauthorized' }, 401);}
+        const role = url.searchParams.get('role') === 'seller' ? 'seller' : 'buyer';
+        const col = role === 'seller' ? 'seller_id' : 'buyer_id';
+        const { results } = await db.prepare(
+          `SELECT p.*, l.title, l.category, l.images
+           FROM purchases p LEFT JOIN listings l ON l.id=p.listing_id
+           WHERE CAST(p.${col} AS TEXT)=?
+           ORDER BY p.created_at DESC LIMIT 100`
+        ).bind(String(user.id)).all();
+        const now = Date.now();
+        const orders = (results || []).map(o => ({
+          ...o,
+          delivery_sla_minutes: 30,
+          sla_minutes_left: Math.max(0, Math.round(30 - (now - new Date(String(o.created_at).replace(' ', 'T') + 'Z').getTime()) / 60000))
+        }));
+        return sendJSON({ orders });
+      }
+
+      /* ================= SELLER: MARK DELIVERED / CANCELLED ================= */
+      if (path.startsWith('/api/purchases/') && method === 'PATCH') {
+        const user = await verifyJWT(request);
+        if (!user) {return sendJSON({ error: 'Unauthorized' }, 401);}
+        const parts = path.split('/');
+        // ['', 'api', 'purchases', <id>, <action>?]
+        const purchaseId = parts[3];
+        const action = parts[4] || 'deliver'; // deliver | cancel
+        const po = await db.prepare('SELECT * FROM purchases WHERE id=?').bind(purchaseId).first();
+        if (!po) {return sendJSON({ error: 'Purchase not found' }, 404);}
+
+        const isSeller = String(po.seller_id) === String(user.id);
+        const isBuyer = String(po.buyer_id) === String(user.id);
+        const isAdminU = String(user.role).toLowerCase() === 'admin';
+        let deliveryStatus = po.delivery_status;
+        let paymentStatus = po.payment_status;
+
+        if (action === 'deliver') {
+          if (!isSeller && !isAdminU) {return sendJSON({ error: 'Only the seller can mark delivery' }, 403);}
+          deliveryStatus = 'delivered';
+          paymentStatus = 'paid';
+        } else if (action === 'cancel') {
+          if ((!isBuyer && !isSeller && !isAdminU) || po.delivery_status === 'delivered') {
+            return sendJSON({ error: 'Cannot cancel this order' }, 400);
+          }
+          deliveryStatus = 'cancelled';
+        } else if (action === 'confirm' && isBuyer) {
+          paymentStatus = 'completed';
+        } else {
+          return sendJSON({ error: 'Invalid action' }, 400);
+        }
+
+        await db.prepare(
+          `UPDATE purchases SET delivery_status=?, payment_status=?, updated_at=datetime('now') WHERE id=?`
+        ).bind(deliveryStatus, paymentStatus, purchaseId).run();
+        return sendJSON({ message: 'Order updated', delivery_status: deliveryStatus, payment_status: paymentStatus });
       }
 
       /* ================= PURCHASE (create) ================= */
@@ -499,20 +559,17 @@ export default {
         const b = await request.json();
         if (!b.listing_id) {return sendJSON({ error: 'listing_id required' }, 400);}
 
-        const listing = await db.prepare('SELECT * FROM listings WHERE id=?').bind(b.listing_id).first();
+        const listing = await db.prepare('SELECT * FROM listings WHERE id=? AND deleted_at IS NULL').bind(b.listing_id).first();
         if (!listing) {return sendJSON({ error: 'Listing not found' }, 404);}
         if (listing.status !== 'available') {return sendJSON({ error: 'Listing not available' }, 409);}
         if (String(listing.seller_id) === String(user.id)) {
           return sendJSON({ error: 'Cannot buy your own listing' }, 400);
         }
 
-        // Popularity boost → buyer must give the game UID where the pop should be delivered
-        let targetUid = '';
-        if (listing.category === 'popularity') {
-          targetUid = String(b.target_uid || '').replace(/[^0-9]/g, '').slice(0, 12);
-          if (!/^[0-9]{1,12}$/.test(targetUid)) {
-            return sendJSON({ error: 'target_uid required (aapki BGMI UID jis pe pop dalni hai)' }, 400);
-          }
+        // Buyer must ALWAYS provide the in-game UID where delivery should happen
+        let targetUid = String(b.target_uid || '').replace(/[^0-9]/g, '').slice(0, 12);
+        if (!/^[0-9]{6,12}$/.test(targetUid)) {
+          return sendJSON({ error: 'Valid target_uid required (your BGMI UID for delivery)' }, 400);
         }
 
         const insert = await db.prepare(
@@ -528,7 +585,7 @@ export default {
         ).run();
         const purchaseId = insert.meta?.last_row_id ?? insert.lastInsertRowid;
 
-        // Popularity listing purchased → credit buyer's popularity points
+        // Popularity listing purchased â†’ credit buyer's popularity points
         if (listing.category === 'popularity' && listing.points > 0) {
           await db.prepare(
             `INSERT INTO popularity (user_id, points, source, created_at)
@@ -577,6 +634,26 @@ export default {
         return sendJSON(results || []);
       }
 
+      /* ================= PUBLIC: SELLER REVIEWS ================= */
+      if (path === '/api/reviews' && method === 'GET') {
+        const sellerId = url.searchParams.get('seller_id');
+        if (!sellerId) {return sendJSON({ error: 'seller_id required' }, 400);}
+        const { results } = await db.prepare(
+          `SELECT r.id, r.stars, r.comment, r.created_at, u.username AS buyer_name
+           FROM reviews r LEFT JOIN users u ON CAST(u.id AS TEXT)=CAST(r.buyer_id AS TEXT)
+           WHERE CAST(r.seller_id AS TEXT)=?
+           ORDER BY r.created_at DESC LIMIT 50`
+        ).bind(sellerId).all();
+        const agg = await db.prepare(
+          'SELECT AVG(stars) AS avg_rating, COUNT(*) AS total FROM reviews WHERE CAST(seller_id AS TEXT)=?'
+        ).bind(sellerId).first();
+        return sendJSON({
+          reviews: results || [],
+          avg_rating: Number(agg?.avg_rating || 0).toFixed(1),
+          total_reviews: agg?.total || 0
+        });
+      }
+
       /* ================= CREATE REVIEW ================= */
       if (path === '/api/reviews' && method === 'POST') {
         const user = await verifyJWT(request);
@@ -587,7 +664,7 @@ export default {
         const stars = Number(b.stars);
         if (!stars || stars < 1 || stars > 5) {return sendJSON({ error: 'stars must be 1-5' }, 400);}
 
-        const listing = await db.prepare('SELECT * FROM listings WHERE id=?').bind(b.listing_id).first();
+        const listing = await db.prepare('SELECT * FROM listings WHERE id=? AND deleted_at IS NULL').bind(b.listing_id).first();
         if (!listing) {return sendJSON({ error: 'Listing not found' }, 404);}
 
         const purchase = await db.prepare(
@@ -761,7 +838,7 @@ export default {
         const listingId = path.split('/')[4];
         const b = await request.json().catch(() => ({}));
 
-        const listing = await db.prepare('SELECT * FROM listings WHERE id=?').bind(listingId).first();
+        const listing = await db.prepare('SELECT * FROM listings WHERE id=? AND deleted_at IS NULL').bind(listingId).first();
         if (!listing) {return sendJSON({ error: 'Listing not found' }, 404);}
 
         const updates = [];
@@ -854,7 +931,7 @@ export default {
         const b = await request.json();
         if (!b.listing_id) {return sendJSON({ error: 'listing_id required' }, 400);}
 
-        const listing = await db.prepare('SELECT * FROM listings WHERE id=?').bind(b.listing_id).first();
+        const listing = await db.prepare('SELECT * FROM listings WHERE id=? AND deleted_at IS NULL').bind(b.listing_id).first();
         if (!listing) {return sendJSON({ error: 'Listing not found' }, 404);}
         if (listing.status !== 'available') {return sendJSON({ error: 'Listing not available' }, 409);}
         if (String(listing.seller_id) === String(user.id)) {
@@ -1075,12 +1152,24 @@ export default {
 
         const user = await verifyJWT(request);
         if (!user || user.role !== 'admin') {return sendJSON({ error: 'Admin only' }, 403);}
+
+        const b = await request.json().catch(() => ({}));
+
+        // badge action: set seller badge (professional tiers)
+        if (action === 'badge') {
+          const allowedBadges = ['new', 'verified', 'veteran', 'trusted', 'elite', 'gold'];
+          if (!allowedBadges.includes(b.badge)) {return sendJSON({ error: 'Invalid badge. Allowed: ' + allowedBadges.join(', ') }, 400);}
+          await db.prepare(
+            'UPDATE sellers SET badge=?, updated_at=datetime(\'now\') WHERE CAST(user_id AS TEXT)=?'
+          ).bind(b.badge, sellerId).run();
+          return sendJSON({ message: `Badge set to ${b.badge}`, seller_id: sellerId, badge: b.badge });
+        }
+
         if (!['hide', 'unhide'].includes(action)) {return sendJSON({ error: 'Invalid action' }, 400);}
 
         const seller = await db.prepare('SELECT * FROM sellers WHERE CAST(user_id AS TEXT)=?').bind(sellerId).first();
         if (!seller) {return sendJSON({ error: 'Seller not found' }, 404);}
 
-        const b = await request.json().catch(() => ({}));
         const hidden = action === 'hide' ? 1 : 0;
         await db.prepare(
           'UPDATE sellers SET hidden=?, updated_at=datetime(\'now\') WHERE CAST(user_id AS TEXT)=?'

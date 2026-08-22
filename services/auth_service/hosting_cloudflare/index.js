@@ -13,7 +13,7 @@ const securityHeaders = {
 };
 
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Origin': 'https://bgmi-frontend.vercel.app', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
   'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type,Authorization',
   ...securityHeaders
@@ -177,7 +177,7 @@ function secureDigit() {
   const arr = new Uint8Array(1);
   do {
     crypto.getRandomValues(arr);
-  } while (arr[0] >= 250); // rejection sample → uniform 0-9
+  } while (arr[0] >= 250); // rejection sample â†’ uniform 0-9
   return arr[0] % 10;
 }
 
@@ -189,10 +189,21 @@ function generateOTP(len = 6) {
 
 async function sendOtpEmail(email, otp, env) {
   const html = `
-    <h2>BGMI Market</h2>
-    <p>Your OTP is:</p>
-    <h1>${otp}</h1>
-    <p>Valid for 10 minutes.</p>
+    <div style="max-width:480px;margin:0 auto;font-family:Segoe UI,Arial,sans-serif;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #eee">
+      <div style="background:linear-gradient(135deg,#ff2d78,#ff7a1a);padding:26px;text-align:center;color:#fff">
+        <div style="font-size:1.5rem;font-weight:800;letter-spacing:.5px">BGMI MARKET</div>
+        <div style="opacity:.9;font-size:.85rem">India's Trusted Gaming Marketplace</div>
+      </div>
+      <div style="padding:30px 28px;color:#222">
+        <h2 style="margin:0 0 6px;font-size:1.25rem">Verify your email</h2>
+        <p style="color:#555;margin:0 0 18px">Use this One-Time Password to complete your verification. It expires in <b>10 minutes</b>.</p>
+        <div style="text-align:center;background:#f7f7fa;border:1px dashed #ddd;border-radius:12px;padding:18px;margin-bottom:18px">
+          <span style="font-size:2.3rem;font-weight:800;letter-spacing:10px;color:#111">${otp}</span>
+        </div>
+        <p style="color:#777;font-size:.85rem;margin:0">Never share this code with anyone — BGMI Market staff will never ask for it. If you didn't request this, you can safely ignore this email.</p>
+      </div>
+      <div style="padding:14px;text-align:center;color:#aaa;font-size:.75rem;background:#fafafa">&copy; 2026 BGMI Market · Secure Escrow · Direct UPI</div>
+    </div>
   `;
 
   // Preferred: EmailJS (works with any Gmail/Outlook, NO domain verification needed)
@@ -266,7 +277,7 @@ async function authUser(request, env) {
   if (!payload) {return null;}
   if (payload.id === 0) {return payload;}
   const { results } = await env.AUTH_DB.prepare(
-    'SELECT id, email, username, role, status, created_at FROM users WHERE id=?'
+    'SELECT id, email, username, role, status, created_at FROM users WHERE id=? AND deleted_at IS NULL'
   ).bind(payload.id).all();
   if (!results.length) {return null;}
   const u = results[0];
@@ -275,6 +286,12 @@ async function authUser(request, env) {
 }
 
 export default {
+  async scheduled(event, env, ctx) {
+    try {
+      const r = await env.AUTH_DB.prepare("UPDATE users SET status='purged', email=email||'.purged', deleted_at=deleted_at WHERE deleted_at IS NOT NULL AND deleted_at < datetime('now','-30 day')").run();
+      console.log('cron purge users:', r.meta.changes);
+    } catch (e) { console.error('purge error:', e.message); }
+  },
   async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -312,15 +329,69 @@ export default {
       }
 
       // =============================================
+      // PROFILE: GET + EDIT (bio, socials, contact, kyc status)
+      // =============================================
+      const cleanP = (v, max) => String(v ?? '').replace(/[<>&'"`]/g, '').trim().slice(0, max);
+      if (path === '/api/auth/profile' && method === 'GET') {
+        const user = await authUser(request, env);
+        if (!user) {return jsonResponse({ error: 'Unauthorized' }, 401);}
+        await env.AUTH_DB.prepare(
+          'INSERT OR IGNORE INTO user_profiles (user_id, name) VALUES (?, ?)'
+        ).bind(user.id, cleanP(user.username, 40)).run();
+        const p = await env.AUTH_DB.prepare('SELECT * FROM user_profiles WHERE user_id=?').bind(user.id).first();
+        return jsonResponse({
+          profile: {
+            name: p?.name || '', bio: p?.bio || '', contact: p?.contact || '',
+            telegram: p?.telegram || '', instagram: p?.instagram || '',
+            facebook: p?.facebook || '', kyc_status: p?.kyc_status || 'unverified'
+          }
+        });
+      }
+      if (path === '/api/auth/profile' && method === 'PUT') {
+        const user = await authUser(request, env);
+        if (!user) {return jsonResponse({ error: 'Unauthorized' }, 401);}
+        const b = await request.json().catch(() => ({}));
+        const fields = {
+          name: cleanP(b.name ?? b.username, 40),
+          bio: cleanP(b.bio, 300),
+          contact: cleanP(b.contact, 20).replace(/[^0-9+\-\s]/g, ''),
+          telegram: cleanP(b.telegram, 60).replace(/^@/, ''),
+          instagram: cleanP(b.instagram, 60),
+          facebook: cleanP(b.facebook, 60)
+        };
+        // social handle validation: alphanumeric/underscore/dot only
+        for (const k of ['telegram', 'instagram', 'facebook']) {
+          if (fields[k] && !/^[A-Za-z0-9._]+$/.test(fields[k])) {
+            return jsonResponse({ error: `Invalid ${k} handle` }, 400);
+          }
+        }
+        await env.AUTH_DB.prepare(
+          'INSERT OR IGNORE INTO user_profiles (user_id, name) VALUES (?, ?)'
+        ).bind(user.id, fields.name || cleanP(user.username, 40)).run();
+        await env.AUTH_DB.prepare(
+          `UPDATE user_profiles SET name=?, bio=?, contact=?, telegram=?, instagram=?, facebook=?, updated_at=CURRENT_TIMESTAMP WHERE user_id=?`
+        ).bind(fields.name || null, fields.bio, fields.contact, fields.telegram, fields.instagram, fields.facebook, user.id).run();
+        const p = await env.AUTH_DB.prepare('SELECT * FROM user_profiles WHERE user_id=?').bind(user.id).first();
+        return jsonResponse({
+          message: 'Profile updated',
+          profile: {
+            name: p?.name || '', bio: p?.bio || '', contact: p?.contact || '',
+            telegram: p?.telegram || '', instagram: p?.instagram || '',
+            facebook: p?.facebook || '', kyc_status: p?.kyc_status || 'unverified'
+          }
+        });
+      }
+
+      // =============================================
       // ADMIN: STATS
       // =============================================
       if (path === '/api/auth/admin/stats' && method === 'GET') {
         const admin = await adminOnly(request, env);
         if (!admin) {return jsonResponse({ error: 'Admin only' }, 403);}
 
-        const totalUsers = (await env.AUTH_DB.prepare('SELECT COUNT(*) AS c FROM users').first());
-        const bannedUsers = (await env.AUTH_DB.prepare("SELECT COUNT(*) AS c FROM users WHERE status='banned'").first());
-        const todayReg = (await env.AUTH_DB.prepare("SELECT COUNT(*) AS c FROM users WHERE date(created_at)=date('now')").first());
+        const totalUsers = (await env.AUTH_DB.prepare('SELECT COUNT(*) AS c FROM users WHERE deleted_at IS NULL').first());
+        const bannedUsers = (await env.AUTH_DB.prepare("SELECT COUNT(*) AS c FROM users WHERE deleted_at IS NULL AND status='banned'").first());
+        const todayReg = (await env.AUTH_DB.prepare("SELECT COUNT(*) AS c FROM users WHERE deleted_at IS NULL AND date(created_at)=date('now')").first());
         const recent = await env.AUTH_DB.prepare(
           'SELECT * FROM user_activity ORDER BY timestamp DESC LIMIT 20'
         ).all();
@@ -406,7 +477,7 @@ export default {
           return jsonResponse({ error: 'Cannot delete this user' }, 403);
         }
 
-        await env.AUTH_DB.prepare('DELETE FROM users WHERE id=?').bind(targetId).run();
+        await env.AUTH_DB.prepare("UPDATE users SET status='deleted', deleted_at=datetime('now') WHERE id=?").bind(targetId).run();
         await logActivity(env, admin.id, 'admin_user_delete', `user:${targetId}`);
         return jsonResponse({ message: 'User deleted', id: targetId });
       }
@@ -420,7 +491,7 @@ export default {
         if (!await checkRateLimit(env, `ip:login:${ip}`, 20, 60)) {
           return jsonResponse({ error: 'Too many login attempts. Try later.' }, 429);
         }
-        if (!await checkRateLimit(env, `acc:login:${String(email).toLowerCase()}`, 15, 60)) {
+        if (!await checkRateLimit(env, `acc:login:${String(email).toLowerCase()}`, 40, 60)) {
           return jsonResponse({ error: 'Too many attempts for this account. Try later.' }, 429);
         }
 
@@ -437,7 +508,7 @@ export default {
         }
 
         const { results } = await env.AUTH_DB.prepare(
-          'SELECT * FROM users WHERE email=? COLLATE NOCASE'
+          "SELECT * FROM users WHERE email=? COLLATE NOCASE AND deleted_at IS NULL"
         ).bind(email).all();
 
         const user = results && results.length > 0 ? results[0] : null;
@@ -502,7 +573,7 @@ export default {
         }
 
         const { results: ex } = await env.AUTH_DB.prepare(
-          'SELECT * FROM users WHERE email=? COLLATE NOCASE'
+          "SELECT * FROM users WHERE email=? COLLATE NOCASE AND deleted_at IS NULL"
         ).bind(email).all();
 
         if (ex.length > 0) {return jsonResponse({ error: 'User already exists' }, 409);}
@@ -558,7 +629,7 @@ export default {
         }
 
         const { results } = await env.AUTH_DB.prepare(
-          'SELECT * FROM users WHERE email=? COLLATE NOCASE'
+          "SELECT * FROM users WHERE email=? COLLATE NOCASE AND deleted_at IS NULL"
         ).bind(email).all();
         if (!results.length) {return jsonResponse({ error: 'Invalid or expired OTP' }, 400);}
 
@@ -587,12 +658,12 @@ export default {
         if (!await checkRateLimit(env, `email:otp:${email}`, 3, 15)) {
           return jsonResponse({ error: 'Too many OTP requests. Try later.' }, 429);
         }
-        if (!await checkRateLimit(env, `ip:otp:${ip}`, 5, 60)) {
+        if (!await checkRateLimit(env, `ip:otp:${ip}`, 10, 60)) {
           return jsonResponse({ error: 'Too many OTP requests from this device. Try later.' }, 429);
         }
 
         const { results } = await env.AUTH_DB.prepare(
-          'SELECT * FROM users WHERE email=? COLLATE NOCASE'
+          "SELECT * FROM users WHERE email=? COLLATE NOCASE AND deleted_at IS NULL"
         ).bind(email).all();
         if (!results.length) {return jsonResponse({ message: 'If your email is registered and unverified, a new OTP has been sent.' });}
 
@@ -650,7 +721,7 @@ export default {
         }
 
         const { results } = await env.AUTH_DB.prepare(
-          'SELECT id, email, username, role, status FROM users WHERE id=?'
+          'SELECT id, email, username, role, status FROM users WHERE id=? AND deleted_at IS NULL'
         ).bind(payload.id).all();
 
         if (!results.length) {
@@ -685,7 +756,7 @@ export default {
         if (!await checkRateLimit(env, `email:otp:${email}`, 3, 15)) {
           return jsonResponse({ error: 'Too many OTP requests. Try later.' }, 429);
         }
-        if (!await checkRateLimit(env, `ip:otp:${ip}`, 5, 60)) {
+        if (!await checkRateLimit(env, `ip:otp:${ip}`, 10, 60)) {
           return jsonResponse({ error: 'Too many OTP requests from this device. Try later.' }, 429);
         }
 
@@ -718,7 +789,7 @@ export default {
             .split(',').map((s) => s.trim().toLowerCase())
             .filter(Boolean);
           if (env.DEV_OTP_RETURN === '1' && allow.includes(String(email).toLowerCase())) {
-            return jsonResponse({ message: 'Email service unavailable — backup code used', dev_otp: otp });
+            return jsonResponse({ message: 'Email service unavailable â€” backup code used', dev_otp: otp });
           }
           return jsonResponse({ error: 'Could not send OTP email. Try again later.' }, 503);
         }

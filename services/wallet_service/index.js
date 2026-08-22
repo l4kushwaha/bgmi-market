@@ -1,14 +1,14 @@
 /**
  * =====================================================
- * 💰 BGMI Wallet Service v2.0.0
+ * ðŸ’° BGMI Wallet Service v2.0.0
  * =====================================================
- * ✅ JWT auth everywhere (standalone HS256 verifier, no deps)
- * ✅ Direct UPI payment (no gateway / no KYC) — 10% admin fee
- * ✅ Server-side order validation vs marketplace listing
- * ✅ UTR uniqueness + rate limiting
- * ✅ Escrow release to seller (admin)
- * ✅ Seller balance + withdraw requests
- * ✅ Protected admin earnings report
+ * âœ… JWT auth everywhere (standalone HS256 verifier, no deps)
+ * âœ… Direct UPI payment (no gateway / no KYC) â€” 10% admin fee
+ * âœ… Server-side order validation vs marketplace listing
+ * âœ… UTR uniqueness + rate limiting
+ * âœ… Escrow release to seller (admin)
+ * âœ… Seller balance + withdraw requests
+ * âœ… Protected admin earnings report
  * =====================================================
  */
 
@@ -23,7 +23,7 @@ const securityHeaders = {
 };
 
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Origin': 'https://bgmi-frontend.vercel.app', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
   'Access-Control-Allow-Headers': 'Content-Type,Authorization',
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
   ...securityHeaders
@@ -145,7 +145,7 @@ export default {
       }
 
       /* ==============================================
-         SERVICE CHARGE PAYMENT (10% admin fee) — UPI
+         SERVICE CHARGE PAYMENT (10% admin fee) â€” UPI
          Direct UPI QR payment, no gateway / no KYC.
          Buyer pays the admin UPI ID, then submits the
          UTR for manual verification by admin.
@@ -178,7 +178,7 @@ export default {
           return json({ error: 'too_many_requests', message: 'Too many payment attempts. Try later.' }, 429);
         }
 
-        // Server-side order validation — kill fake order ids, mismatched sellers, underpayment
+        // Server-side order validation â€” kill fake order ids, mismatched sellers, underpayment
         const listing = await marketplaceListing(order_id);
         if (!listing) {
           return json({ error: 'invalid_order', message: 'Order (listing) not found' }, 400);
@@ -188,7 +188,7 @@ export default {
         }
         if (purpose === 'full') {
           if (amt !== Number(listing.price)) {
-            return json({ error: 'amount_mismatch', message: `Amount must match the listing price (₹${Number(listing.price).toLocaleString('en-IN')})` }, 400);
+            return json({ error: 'amount_mismatch', message: `Amount must match the listing price (â‚¹${Number(listing.price).toLocaleString('en-IN')})` }, 400);
           }
         } else if (amt > Number(listing.price)) {
           return json({ error: 'amount_too_high', message: 'Amount cannot exceed the listing price' }, 400);
@@ -239,7 +239,7 @@ export default {
             }
           }
         } catch (e) {
-          // network/service error → fall back to admin UPI
+          // network/service error â†’ fall back to admin UPI
         }
 
         const payment_id = crypto.randomUUID();
@@ -305,7 +305,7 @@ export default {
         const cleanUtr = String(utr || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 40);
         if (cleanUtr.length < 6) {return json({ error: 'invalid_utr' }, 400);}
 
-        // UTR uniqueness — one reference number cannot confirm two payments
+        // UTR uniqueness â€” one reference number cannot confirm two payments
         const dup = await db.prepare(`
           SELECT id FROM service_payments
           WHERE utr=? AND status IN ('submitted','paid','released')
@@ -408,7 +408,7 @@ export default {
         const upi_id = body.upi_id;
 
         if (!Number.isFinite(amount) || amount < 10 || amount > 10000000) {
-          return json({ error: 'invalid_amount (min ₹10, max ₹10,000,000)' }, 400);
+          return json({ error: 'invalid_amount (min â‚¹10, max â‚¹10,000,000)' }, 400);
         }
         if (!upi_id || !/^[\w.-]{2,}@[a-zA-Z]{2,}$/.test(upi_id)) {
           return json({ error: 'invalid_upi' }, 400);
@@ -565,6 +565,16 @@ export default {
       }
 
       /* ==============================================
+         LOGGED-IN USERS: PLATFORM UPI (for commission payment)
+         ============================================== */
+      if (path === '/platform/upi' && method === 'GET') {
+        const u = await authUser();
+        if (!u) {return json({ error: 'unauthorized' }, 401);}
+        const { admin_upi_id, admin_upi_name } = await platformUpi();
+        return json({ admin_upi_id, admin_upi_name });
+      }
+
+      /* ==============================================
          ADMIN: PLATFORM SETTINGS (GET) — UPI details
          ============================================== */
       if (path === '/admin/settings' && method === 'GET') {
@@ -576,7 +586,7 @@ export default {
       }
 
       /* ==============================================
-         ADMIN: PLATFORM SETTINGS (PUT) — edit UPI details
+         ADMIN: PLATFORM SETTINGS (PUT) â€” edit UPI details
          ============================================== */
       if (path === '/admin/settings' && method === 'PUT') {
         const admin = await adminOnly();

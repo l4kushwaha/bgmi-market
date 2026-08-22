@@ -55,6 +55,12 @@ CREATE TABLE IF NOT EXISTS user_profiles (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL UNIQUE,
   name TEXT,
+  bio TEXT,
+  contact TEXT,
+  telegram TEXT,
+  instagram TEXT,
+  facebook TEXT,
+  kyc_status TEXT DEFAULT 'unverified',
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );

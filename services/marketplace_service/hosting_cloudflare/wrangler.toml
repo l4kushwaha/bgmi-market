@@ -76,3 +76,6 @@ database_id = "fdfb3df6-92b2-4931-845d-3b926915f520"
 # Deploy:  npx wrangler deploy --env production
 # Health:  https://bgmi_marketplace_service.bgmi-gateway.workers.dev/api/health
 # =====================================================
+
+[triggers]
+crons = ["0 3 * * *"]

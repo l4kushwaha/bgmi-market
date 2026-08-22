@@ -13,7 +13,7 @@ async function cleanup(env, db) {
   const pCut = new Date(now - privateTTL).toISOString();
   const rCut = new Date(now - roomTTL).toISOString();
 
-  // 1. voice media KV keys — pehle delete karo, phir rows
+  // 1. voice media KV keys â€” pehle delete karo, phir rows
   const oldMedia = await db.prepare(`
     SELECT media FROM global_messages WHERE media IS NOT NULL AND created_at < ?
     UNION
@@ -30,12 +30,12 @@ async function cleanup(env, db) {
   await db.prepare('DELETE FROM global_messages WHERE created_at < ?').bind(gCut).run();
   await db.prepare('DELETE FROM messages WHERE created_at < ?').bind(pCut).run();
 
-  // 3. closed chat rooms (cascade → unke messages bhi)
+  // 3. closed chat rooms (cascade â†’ unke messages bhi)
   await db.prepare(
     "DELETE FROM chat_rooms WHERE status='closed' AND closed_at IS NOT NULL AND closed_at < ?"
   ).bind(rCut).run();
 
-  // 4. purani ended/missed calls (cascade → call_events)
+  // 4. purani ended/missed calls (cascade â†’ call_events)
   await db.prepare(
     "DELETE FROM calls WHERE status IN ('ended','missed') AND created_at < ?"
   ).bind(rCut).run();
@@ -58,7 +58,7 @@ export default {
     /* ================= CORS ================= */
     const headers = {
       'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Origin': 'https://bgmi-frontend.vercel.app', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
       'Access-Control-Allow-Headers': 'Authorization,Content-Type',
       'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
       'X-Content-Type-Options': 'nosniff',
@@ -81,7 +81,7 @@ export default {
       const url = new URL(req.url);
       const path = url.pathname;
       const method = req.method;
-      const db = env.chat_db;
+      const db = env.CHAT_DB || env.chat_db;
 
       /* ================= HEALTH ================= */
       if (path === '/health' || path === '/api/chat/health') {
@@ -120,11 +120,14 @@ export default {
         if (!h || !h.startsWith('Bearer ')) {return null;}
 
         const token = h.slice(7);
-        const valid = await jwt.verify(token, env.JWT_SECRET);
-        
+        let valid = false;
+        try { valid = await jwt.verify(token, env.JWT_SECRET); } catch (e) { return null; }
+
         if (!valid) {return null;}
 
-        const { payload } = jwt.decode(token);
+        const dec = jwt.decode(token);
+        const payload = dec && dec.payload;
+        if (!payload || !payload.id) {return null;}
         return payload;
       }
 
@@ -315,7 +318,7 @@ export default {
         let media_type = null;
         let message = body.message || null;
 
-        // voice message → media stored in KV
+        // voice message â†’ media stored in KV
         if (body.media) {
           media = await storeMedia(body.media);
           if (!media) {return json({ error: 'invalid_media' }, 400);}
@@ -516,7 +519,7 @@ export default {
         return new Response(got.value, {
           headers: {
             'Content-Type': mime,
-            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Origin': 'https://bgmi-frontend.vercel.app', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
             'Cache-Control': 'public, max-age=86400',
             'X-Content-Type-Options': 'nosniff',
             'Content-Disposition': 'inline'
@@ -525,7 +528,7 @@ export default {
       }
 
       /* ======================================================
-         📞 CALLING SYSTEM (WebRTC signaling relay)
+         ðŸ“ž CALLING SYSTEM (WebRTC signaling relay)
          ====================================================== */
       if (path === '/api/chat/call/start' && method === 'POST') {
         const user = await auth();

@@ -12,3 +12,6 @@ database_id = "4f0ce6f4-2909-4af7-924e-d04289d8a350"
 #   ADMIN_EMAIL    – admin login email
 #   ADMIN_PASSWORD – admin login password
 #   BREVO_API_KEY  – Brevo (Sendinblue) API key for OTP emails
+
+[triggers]
+crons = ["0 3 * * *"]

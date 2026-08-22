@@ -82,14 +82,14 @@ export default {
         status,
         headers: {
           'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Origin': request.headers.get('Origin') || '*', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
           'Access-Control-Allow-Headers': 'Content-Type,Authorization',
           'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
           ...securityHeaders
         }
       });
 
-    if (request.method === 'OPTIONS') {return new Response('ok', { status: 204, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type,Authorization', ...securityHeaders } });}
+    if (request.method === 'OPTIONS') {return new Response('ok', { status: 204, headers: { 'Access-Control-Allow-Origin': request.headers.get('Origin') || '*', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type,Authorization', ...securityHeaders } });}
 
     if (url.pathname === '/' || url.pathname === '/health') {
       return json({ service: 'verification_service', version: '2.0.0', status: 'running' });
@@ -148,7 +148,7 @@ export default {
               parsedData = { name: grab('name'), gender: grab('gender'), dob: grab('dob'), address: grab('address') };
             }
           } catch (e) {
-            // not a valid zip, zip bomb, or unparseable — still record submission
+            // not a valid zip, zip bomb, or unparseable â€” still record submission
           }
         }
 
@@ -176,7 +176,7 @@ export default {
         });
       }
 
-      // Seller public UPI (any authenticated user — used for direct seller payment)
+      // Seller public UPI (any authenticated user â€” used for direct seller payment)
       if (url.pathname.startsWith('/seller/upi/') && request.method === 'GET') {
         const user = await authUser();
         if (!user) {return json({ error: 'unauthorized' }, 401);}

@@ -1,5 +1,5 @@
 # === Cloudflare Worker Configuration ===
-name = "verification_service"
+name = "verification-service"
 main = "index.js"
 compatibility_date = "2025-11-08"
 
