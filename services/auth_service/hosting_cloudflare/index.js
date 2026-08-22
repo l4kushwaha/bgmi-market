@@ -785,12 +785,7 @@ export default {
           // SECURITY: backup-code is returned ONLY when explicitly enabled (DEV_OTP_RETURN="1")
           // AND the target email is allow-listed (DEV_OTP_EMAILS="a@x,b@y"). Off by default so
           // a stranger who knows a user's email cannot take over the account.
-          const allow = (env.DEV_OTP_EMAILS || '')
-            .split(',').map((s) => s.trim().toLowerCase())
-            .filter(Boolean);
-          if (env.DEV_OTP_RETURN === '1' && allow.includes(String(email).toLowerCase())) {
-            return jsonResponse({ message: 'Email service unavailable â€” backup code used', dev_otp: otp });
-          }
+          console.error('OTP send failed:', e);
           return jsonResponse({ error: 'Could not send OTP email. Try again later.' }, 503);
         }
 
@@ -800,9 +795,8 @@ export default {
       // RESET PASSWORD (using OTP)
       if (path === '/api/auth/reset-password' && method === 'POST') {
         const body = await request.json().catch(() => ({}));
-        const { otp, new_password } = body;
-        if (!otp || !new_password) {return jsonResponse({ error: 'OTP & new password required' }, 400);}
-
+        const { email, otp, new_password } = body;
+        if (!email || !otp || !new_password) {return jsonResponse({ error: 'Email, OTP & new password required' }, 400);}
         if (typeof new_password !== 'string' || new_password.length < 8 || new_password.length > 128) {
           return jsonResponse({ error: 'Password must be 8-128 characters' }, 400);
         }
@@ -810,10 +804,13 @@ export default {
         if (!await checkRateLimit(env, `ip:reset:${ip}`, 10, 60)) {
           return jsonResponse({ error: 'Too many reset attempts. Try later.' }, 429);
         }
+        if (!await checkRateLimit(env, `reset:acct:${String(email).toLowerCase()}`, 5, 60)) {
+          return jsonResponse({ error: 'Too many reset attempts for this account. Try later.' }, 429);
+        }
 
         const { results } = await env.AUTH_DB.prepare(
-          "SELECT * FROM password_resets WHERE otp=? AND expires_at>datetime('now')"
-        ).bind(otp).all();
+          "SELECT r.* FROM password_resets r JOIN users u ON u.id=r.user_id WHERE LOWER(u.email)=LOWER(?) AND r.otp=? AND expires_at>datetime('now') LIMIT 1"
+        ).bind(String(email), otp).all();
 
         if (!results || results.length === 0) {return jsonResponse({ error: 'Invalid or expired OTP' }, 400);}
 
