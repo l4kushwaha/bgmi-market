@@ -127,7 +127,7 @@ export default {
 
         const dec = jwt.decode(token);
         const payload = dec && dec.payload;
-        if (!payload || !payload.id) {return null;}
+        if (!payload || payload.id === undefined || payload.id === null) {return null;}
         return payload;
       }
 
