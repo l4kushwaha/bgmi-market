@@ -373,6 +373,9 @@ export default {
         let points = category === 'popularity' ? (Number(b.points) || 0) : 0;
         if (category === 'popularity' && points < 1) {points = 100;}
         if (points > 10000000) {points = 10000000;}
+        let rate1k = category === 'popularity' ? (Number(b.rate_per_1k) || 0) : 0;
+        if (rate1k < 0) {rate1k = 0;}
+        if (rate1k > 1000000) {rate1k = 1000000;}
         const cleanDesc = String(b.description || '').replace(/[<>&'"`]/g, '').trim().slice(0, 1000);
         const deliveryTime = String(b.delivery_time || '').replace(/[<>&'"`]/g, '').trim().slice(0, 60);
         const meetupAvailable = b.meetup_available === 1 || b.meetup_available === true || String(b.meetup_available) === '1' ? 1 : 0;
@@ -389,8 +392,8 @@ export default {
           (seller_id,uid,title,description,category,points,delivery_time,price,level,highest_rank,
            mythic_items,legendary_items,honor_gift,upgraded_guns,titles,
            x_suit,supercar,ultimate,images,meetup_available,city,
-           status,avg_rating,review_count,seller_verified)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'available',0,0,0)`
+           rate_per_1k,status,avg_rating,review_count,seller_verified)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'available',0,0,0)`
         ).bind(
           String(user.id),
           cleanUid,
@@ -412,7 +415,8 @@ export default {
           JSON.stringify(b.ultimate || []),
           JSON.stringify(b.images || []),
           meetupAvailable,
-          cleanCity || null
+          cleanCity || null,
+          rate1k
         ).run();
 
         return sendJSON({ message: 'Listing created', id: insert.meta?.last_row_id ?? insert.lastInsertRowid });
