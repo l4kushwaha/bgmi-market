@@ -183,7 +183,8 @@ export default {
       ultimate: 250,
       min_price: 999,
       round_to: 50,
-      pop_per_point: 1        // â‚¹ per popularity point
+      pop_per_point: 1,       // legacy per popularity point
+      pop_rate_1k: 10         // per 1,000 popularity points (admin default)
     };
 
     if (path === '/api/price-config' && method === 'GET') {
