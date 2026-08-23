@@ -589,27 +589,9 @@ export default {
 
         const newId = insert.meta?.last_row_id ?? insert.lastInsertRowid;
 
-        // Email verification on signup: only enforced when OTP email can actually be sent.
-        // If sending works -> account created unverified, user must enter OTP before first login.
-        // If email is unavailable (no provider configured) -> account stays active, no lockout.
+        // V18: instant-access signup - account is active & verified immediately,
+        // user logs in right after registering (no OTP gate).
         let verifyRequired = false;
-        try {
-          const vOtp = generateOTP();
-          const vExpiry = sqliteDatetime(new Date(Date.now() + 10 * 60000));
-          await env.AUTH_DB.prepare(
-            'DELETE FROM email_verifications WHERE user_id=?'
-          ).bind(newId).run();
-          await env.AUTH_DB.prepare(
-            'INSERT INTO email_verifications(user_id,otp,expires_at) VALUES(?,?,?)'
-          ).bind(newId, vOtp, vExpiry).run();
-          await sendOtpEmail(email, vOtp, env);
-          await env.AUTH_DB.prepare(
-            'UPDATE users SET email_verified=0 WHERE id=?'
-          ).bind(newId).run();
-          verifyRequired = true;
-        } catch (e) {
-          console.error('Verification email failed:', e);
-        }
 
         await logActivity(env, newId, 'register');
         return jsonResponse({
