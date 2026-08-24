@@ -58,7 +58,7 @@ export default {
     /* ================= CORS ================= */
     const headers = {
       'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': 'https://bgmi-frontend.vercel.app', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+      'Access-Control-Allow-Origin': 'https://bgmi-frontend.vercel.app', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
       'Access-Control-Allow-Headers': 'Authorization,Content-Type',
       'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
       'X-Content-Type-Options': 'nosniff',
@@ -519,7 +519,7 @@ export default {
         return new Response(got.value, {
           headers: {
             'Content-Type': mime,
-            'Access-Control-Allow-Origin': 'https://bgmi-frontend.vercel.app', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+            'Access-Control-Allow-Origin': 'https://bgmi-frontend.vercel.app', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
             'Cache-Control': 'public, max-age=86400',
             'X-Content-Type-Options': 'nosniff',
             'Content-Disposition': 'inline'

@@ -22,7 +22,8 @@ const corsHeaders = {
 function jsonResponse(obj, status = 200) {
   return new Response(JSON.stringify(obj, null, 2), {
     status,
-    headers: { 'Content-Type': 'application/json', ...corsHeaders },
+    headers: {
+      'Cache-Control': 'no-store', 'Content-Type': 'application/json', ...corsHeaders },
   });
 }
 

@@ -23,7 +23,8 @@ const securityHeaders = {
 };
 
 const corsHeaders = {
-  'Access-Control-Allow-Origin': 'https://bgmi-frontend.vercel.app', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+  'Access-Control-Allow-Origin': 'https://bgmi-frontend.vercel.app',
+  'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
   'Access-Control-Allow-Headers': 'Content-Type,Authorization',
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
   ...securityHeaders

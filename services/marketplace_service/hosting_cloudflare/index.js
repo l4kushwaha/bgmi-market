@@ -24,6 +24,7 @@ export default {
     const db = env.MARKETPLACE_DB;
 
     const SECURITY_HEADERS = {
+  'Cache-Control': 'no-store',
       'X-Content-Type-Options': 'nosniff',
       'X-Frame-Options': 'DENY',
       'Referrer-Policy': 'no-referrer',

@@ -64,7 +64,9 @@ function cleanText(v, max = 500) {
 
 export default {
   async fetch(request, env) {
-    const ORIGIN = request.headers.get("Origin") || "*";
+    const ALLOWED_ORIGINS = ["https://bgmi-frontend.vercel.app", "http://localhost:3000", "http://127.0.0.1:3000"];
+    const _o = request.headers.get("Origin");
+    const ORIGIN = (_o && ALLOWED_ORIGINS.includes(_o)) ? _o : "https://bgmi-frontend.vercel.app";
     const url = new URL(request.url);
     const { VERIFICATION_DB, UPLOADS } = env;
 
@@ -83,14 +85,14 @@ export default {
         status,
         headers: {
           'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': ORIGIN, 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+          'Access-Control-Allow-Origin': ORIGIN, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
           'Access-Control-Allow-Headers': 'Content-Type,Authorization',
           'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
           ...securityHeaders
         }
       });
 
-    if (request.method === 'OPTIONS') {return new Response(null, { status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type,Authorization', ...securityHeaders } });}
+    if (request.method === 'OPTIONS') {return new Response(null, { status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type,Authorization', ...securityHeaders } });}
 
     if (url.pathname === '/' || url.pathname === '/health') {
       return json({ service: 'verification_service', version: '2.0.0', status: 'running' });
