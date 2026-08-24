@@ -378,6 +378,21 @@ export default {
         let rate1k = category === 'popularity' ? (Number(b.rate_per_1k) || 0) : 0;
         if (rate1k < 0) {rate1k = 0;}
         if (rate1k > 1000000) {rate1k = 1000000;}
+        // Multi-item boost composition (popularity): [{n:name, v:points_each, q:qty}, ...]
+        let boostItems = null;
+        if (category === 'popularity' && b.boost_items) {
+          try {
+            const arr = JSON.parse(String(b.boost_items));
+            if (Array.isArray(arr)) {
+              const clean = arr.slice(0, 40).map(it => ({
+                n: String((it && it.n) || 'Boost').replace(/[<>&'"`]/g, '').trim().slice(0, 60) || 'Boost',
+                v: Math.max(1, Math.min(10000000, Number(it && it.v) || 1)),
+                q: Math.max(1, Math.min(999, Math.floor(Number(it && it.q) || 1)))
+              })).filter(it => it.n);
+              boostItems = clean.length ? JSON.stringify(clean) : null;
+            }
+          } catch (e) {boostItems = null;}
+        }
         const cleanDesc = String(b.description || '').replace(/[<>&'"`]/g, '').trim().slice(0, 1000);
         const deliveryTime = String(b.delivery_time || '').replace(/[<>&'"`]/g, '').trim().slice(0, 60);
         const meetupAvailable = b.meetup_available === 1 || b.meetup_available === true || String(b.meetup_available) === '1' ? 1 : 0;
@@ -394,8 +409,8 @@ export default {
           (seller_id,uid,title,description,category,points,delivery_time,price,level,highest_rank,
            mythic_items,legendary_items,honor_gift,upgraded_guns,titles,
            x_suit,supercar,ultimate,images,meetup_available,city,
-           rate_per_1k,status,avg_rating,review_count,seller_verified)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'available',0,0,0)`
+           rate_per_1k,boost_items,status,avg_rating,review_count,seller_verified)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'available',0,0,0)`
         ).bind(
           String(user.id),
           cleanUid,
@@ -418,7 +433,8 @@ export default {
           JSON.stringify(b.images || []),
           meetupAvailable,
           cleanCity || null,
-          rate1k
+          rate1k,
+          boostItems
         ).run();
 
         return sendJSON({ message: 'Listing created', id: insert.meta?.last_row_id ?? insert.lastInsertRowid });
