@@ -1,6 +1,6 @@
 /**
  * =====================================================
- * ðŸ›’ BGMI Marketplace Service v4.0.0
+ * BGMI Marketplace Service v5.0.0
  * =====================================================
  * âœ… Listings CRUD + single listing GET
  * âœ… Reviews (create + seller aggregates)
@@ -10,10 +10,18 @@
  * =====================================================
  */
 
+const hits = new Map();
+
+// Periodic cleanup: purge rate limiter entries older than 5 minutes
+setInterval(() => {
+  const cutoff = Date.now() - 300000;
+  for (const [k, v] of hits) { if (v.t < cutoff) hits.delete(k); }
+}, 60000);
+
 export default {
   async scheduled(event, env, ctx) {
     try {
-      const r = await env.db.prepare("DELETE FROM listings WHERE deleted_at IS NOT NULL AND deleted_at < datetime('now','-10 day')").run();
+      const r = await env.MARKETPLACE_DB.prepare("DELETE FROM listings WHERE deleted_at IS NOT NULL AND deleted_at < datetime('now','-10 day')").run();
       console.log('cron purge listings:', r.meta.changes);
     } catch (e) { console.error('purge error:', e.message); }
   },
@@ -46,7 +54,6 @@ export default {
     const sendJSON = (obj, status = 200) =>
       new Response(JSON.stringify(obj), { status, headers: CORS_HEADERS });
 
-    const hits = new Map();
     const rate = (key, max, windowMs) => {
       const now = Date.now();
       const rec = hits.get(key);
@@ -159,11 +166,15 @@ export default {
       supercar: safeJSON(r.supercar),
       ultimate: safeJSON(r.ultimate),
       images: safeJSON(r.images),
+      rate_per_1k: r.rate_per_1k || 0,
+      boost_items: r.boost_items || null,
+      express_enabled: r.express_enabled || 0,
+      express_charge: r.express_charge || 0,
     });
 
     /* ================= HEALTH ================= */
     if (path === '/api/health') {
-      return sendJSON({ service: 'marketplace', version: '4.0.0', status: 'running' });
+      return sendJSON({ service: 'marketplace', version: '5.0.0', status: 'running' });
     }
 
     /* ================= PRICE CONFIG (estimate prices, admin-editable) ================= */
@@ -290,6 +301,15 @@ export default {
           resp.pending_commission = Number(seller.pending_commission || 0);
           resp.hidden = Number(seller.hidden || 0);
         }
+
+        // Check if seller has any KYC verified status
+        let kyc_verified = false;
+        try {
+          const kyc = await db.prepare('SELECT kyc_verified FROM users WHERE id=?').bind(String(seller.user_id)).first();
+          kyc_verified = !!(kyc && kyc.kyc_verified);
+        } catch {}
+        resp.kyc_verified = kyc_verified;
+
         return sendJSON(resp);
       }
 
@@ -398,19 +418,22 @@ export default {
         const meetupAvailable = b.meetup_available === 1 || b.meetup_available === true || String(b.meetup_available) === '1' ? 1 : 0;
         const cleanCity = cleanVal(b.city, 40);
 
-        if (cleanCity) {
+        if (cleanCity || b.meetup_note !== undefined) {
           await db.prepare(
-            "UPDATE sellers SET city=?, meetup_note=?, updated_at=datetime('now') WHERE CAST(user_id AS TEXT)=?"
-          ).bind(cleanCity, cleanVal(b.meetup_note, 120), String(user.id)).run();
+            "UPDATE sellers SET city=COALESCE(?, city), meetup_note=COALESCE(?, meetup_note), updated_at=datetime('now') WHERE CAST(user_id AS TEXT)=?"
+          ).bind(cleanCity || null, b.meetup_note !== undefined ? cleanVal(b.meetup_note, 120) || null : null, String(user.id)).run();
         }
+
+        const expressEnabled = b.express_enabled === 1 || b.express_enabled === true || String(b.express_enabled) === '1' ? 1 : 0;
+        const expressCharge = Math.max(0, Math.min(10000000, Number(b.express_charge) || 0));
 
         const insert = await db.prepare(
           `INSERT INTO listings
           (seller_id,uid,title,description,category,points,delivery_time,price,level,highest_rank,
            mythic_items,legendary_items,honor_gift,upgraded_guns,titles,
            x_suit,supercar,ultimate,images,meetup_available,city,
-           rate_per_1k,boost_items,status,avg_rating,review_count,seller_verified)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'available',0,0,0)`
+           rate_per_1k,boost_items,express_enabled,express_charge,status,avg_rating,review_count,seller_verified)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'available',0,0,0)`
         ).bind(
           String(user.id),
           cleanUid,
@@ -434,7 +457,9 @@ export default {
           meetupAvailable,
           cleanCity || null,
           rate1k,
-          boostItems
+          boostItems,
+          expressEnabled,
+          expressCharge
         ).run();
 
         return sendJSON({ message: 'Listing created', id: insert.meta?.last_row_id ?? insert.lastInsertRowid });
@@ -483,6 +508,7 @@ export default {
             title=?, description=?, price=?, level=?, highest_rank=?,
             mythic_items=?, legendary_items=?, honor_gift=?, upgraded_guns=?, titles=?,
             x_suit=?, supercar=?, ultimate=?, images=?, delivery_time=?, meetup_available=?, city=?,
+            express_enabled=?, express_charge=?, account_highlights=?,
             updated_at=datetime('now')
            WHERE id=?`
         ).bind(
@@ -497,12 +523,15 @@ export default {
           JSON.stringify(b.upgraded_guns !== undefined ? b.upgraded_guns : safeParseArr(listing.upgraded_guns)),
           JSON.stringify(b.titles !== undefined ? b.titles : safeParseArr(listing.titles)),
           JSON.stringify(b.x_suit !== undefined ? b.x_suit : safeParseArr(listing.x_suit)),
-          JSON.stringify(b.supercar !== undefined ? b.super_car ?? b.supercar : safeParseArr(listing.supercar)),
+          JSON.stringify(b.supercar !== undefined ? b.supercar : safeParseArr(listing.supercar)),
           JSON.stringify(b.ultimate !== undefined ? b.ultimate : safeParseArr(listing.ultimate)),
           JSON.stringify(b.images !== undefined ? b.images : safeParseArr(listing.images)),
           String(b.delivery_time || '').replace(/[<>&'"`]/g, '').trim().slice(0, 60) || null,
           (b.meetup_available === 1 || b.meetup_available === true || String(b.meetup_available) === '1') ? 1 : 0,
           cleanVal(b.city, 40) || null,
+          (b.express_enabled === 1 || b.express_enabled === true || String(b.express_enabled) === '1') ? 1 : (listing.express_enabled || 0),
+          b.express_charge !== undefined ? Math.max(0, Math.min(10000000, Number(b.express_charge) || 0)) : (listing.express_charge || 0),
+          String(b.account_highlights || '').replace(/[<>&'"`]/g, '').trim().slice(0, 500) || null,
           listingId
         ).run();
 
@@ -532,11 +561,11 @@ export default {
         const user = await verifyJWT(request);
         if (!user) {return sendJSON({ error: 'Unauthorized' }, 401);}
         const role = url.searchParams.get('role') === 'seller' ? 'seller' : 'buyer';
-        const col = role === 'seller' ? 'seller_id' : 'buyer_id';
+        const col = role === 'seller' ? 'p.seller_id' : 'p.buyer_id';
         const { results } = await db.prepare(
           `SELECT p.*, l.title, l.category, l.images
            FROM purchases p LEFT JOIN listings l ON l.id=p.listing_id
-           WHERE CAST(p.${col} AS TEXT)=?
+           WHERE CAST(${col} AS TEXT)=?
            ORDER BY p.created_at DESC LIMIT 100`
         ).bind(String(user.id)).all();
         const now = Date.now();
@@ -583,7 +612,87 @@ export default {
         await db.prepare(
           `UPDATE purchases SET delivery_status=?, payment_status=?, updated_at=datetime('now') WHERE id=?`
         ).bind(deliveryStatus, paymentStatus, purchaseId).run();
+
+        // Reverse popularity points on cancellation
+        if (action === 'cancel') {
+          try {
+            const cancelled = await db.prepare(
+              'SELECT listing_id, buyer_id FROM purchases WHERE id=?'
+            ).bind(purchaseId).first();
+            if (cancelled) {
+              const listInfo = await db.prepare(
+                'SELECT category, points FROM listings WHERE id=?'
+              ).bind(cancelled.listing_id).first();
+              if (listInfo && listInfo.category === 'popularity' && listInfo.points > 0) {
+                await db.prepare(
+                  `INSERT INTO popularity (user_id, points, source, created_at)
+                   VALUES (?, ?, 'cancellation_reversal', datetime('now'))`
+                ).bind(String(cancelled.buyer_id), -Math.abs(listInfo.points)).run();
+              }
+            }
+          } catch (e) { console.error('popularity reversal error:', e.message); }
+        }
+
         return sendJSON({ message: 'Order updated', delivery_status: deliveryStatus, payment_status: paymentStatus });
+      }
+
+      /* ================= SELLER: SCHEDULE DELIVERY ================= */
+      if (path === '/api/purchases/schedule' && method === 'POST') {
+        const user = await verifyJWT(request);
+        if (!user) { return sendJSON({ error: 'Unauthorized' }, 401); }
+        
+        const b = await request.json().catch(() => ({}));
+        if (!b.purchase_id || !b.scheduled_time) {
+          return sendJSON({ error: 'purchase_id and scheduled_time required' }, 400);
+        }
+        
+        const purchase = await db.prepare('SELECT * FROM purchases WHERE id=?').bind(b.purchase_id).first();
+        if (!purchase) return sendJSON({ error: 'Purchase not found' }, 404);
+        
+        if (String(purchase.seller_id) !== String(user.id) && String(user.role).toLowerCase() !== 'admin') {
+          return sendJSON({ error: 'Only the seller can schedule delivery' }, 403);
+        }
+        
+        if (purchase.delivery_status !== 'awaiting') {
+          return sendJSON({ error: 'This order is not awaiting delivery' }, 400);
+        }
+        
+        // Seller can schedule up to 30 min before buyer's requested time
+        // For express: within 5 min of purchase
+        const cleanTime = String(b.scheduled_time).replace(/[<>&'"`]/g, '').trim().slice(0, 30);
+        const notes = String(b.seller_notes || '').replace(/[<>&'"`]/g, '').trim().slice(0, 500);
+        
+        await db.prepare(
+          `UPDATE purchases SET seller_scheduled_at=?, seller_notes=?, updated_at=datetime('now') WHERE id=?`
+        ).bind(cleanTime, notes || null, b.purchase_id).run();
+        
+        return sendJSON({ message: 'Delivery scheduled', purchase_id: b.purchase_id, scheduled_at: cleanTime });
+      }
+
+      /* ================= SELLER: CONFIRM DELIVERY ================= */
+      if (path === '/api/purchases/confirm-delivery' && method === 'POST') {
+        const user = await verifyJWT(request);
+        if (!user) { return sendJSON({ error: 'Unauthorized' }, 401); }
+        
+        const b = await request.json().catch(() => ({}));
+        if (!b.purchase_id) return sendJSON({ error: 'purchase_id required' }, 400);
+        
+        const purchase = await db.prepare('SELECT * FROM purchases WHERE id=?').bind(b.purchase_id).first();
+        if (!purchase) return sendJSON({ error: 'Purchase not found' }, 404);
+        
+        if (String(purchase.seller_id) !== String(user.id) && String(user.role).toLowerCase() !== 'admin') {
+          return sendJSON({ error: 'Only the seller can confirm delivery' }, 403);
+        }
+        
+        if (purchase.delivery_status !== 'awaiting') {
+          return sendJSON({ error: 'Order not in awaiting state' }, 400);
+        }
+        
+        await db.prepare(
+          `UPDATE purchases SET delivery_status='delivered', payment_status='paid', delivered_at=datetime('now'), updated_at=datetime('now') WHERE id=?`
+        ).bind(b.purchase_id).run();
+        
+        return sendJSON({ message: 'Delivery confirmed', purchase_id: b.purchase_id });
       }
 
       /* ================= PURCHASE (create) ================= */
@@ -610,16 +719,22 @@ export default {
           return sendJSON({ error: 'Valid target_uid required (your BGMI UID for delivery)' }, 400);
         }
 
+        const expressCharge = b.express_delivery ? (Number(listing.express_charge) || 0) : 0;
+        const finalPrice = Number(listing.price || 0) + expressCharge;
+
         const insert = await db.prepare(
-          `INSERT INTO purchases (listing_id, buyer_id, seller_id, price, payment_status, delivery_status, delivery_time, target_uid, created_at, updated_at)
-           VALUES (?,?,?,?,'pending','awaiting',?,?,datetime('now'),datetime('now'))`
+          `INSERT INTO purchases (listing_id, buyer_id, seller_id, price, payment_status, delivery_status, delivery_date, delivery_time, target_uid, item_selections, express_delivery, created_at, updated_at)
+           VALUES (?,?,?,?,'pending','awaiting',?,?,?,?,?, datetime('now'),datetime('now'))`
         ).bind(
           b.listing_id,
           String(user.id),
           String(listing.seller_id),
-          listing.price,
+          finalPrice,
+          String(b.delivery_date || '').replace(/[<>&'"`]/g, '').trim().slice(0, 20) || null,
           String(b.delivery_time || '').replace(/[<>&'"`]/g, '').trim().slice(0, 60) || null,
-          targetUid || null
+          targetUid || null,
+          b.item_selections ? JSON.stringify(b.item_selections) : null,
+          b.express_delivery ? 1 : 0
         ).run();
         const purchaseId = insert.meta?.last_row_id ?? insert.lastInsertRowid;
 
@@ -632,14 +747,14 @@ export default {
         }
 
         // 2.5% commission accrues to seller on every sale
-        const commission = Math.round(Number(listing.price || 0) * 0.025 * 100) / 100;
+        const commission = Math.round(Number(finalPrice || 0) * 0.025 * 100) / 100;
         if (commission > 0) {
           await db.prepare(
             `UPDATE sellers SET pending_commission = COALESCE(pending_commission,0) + ?,
                     total_sales = COALESCE(total_sales,0) + 1, total_revenue = COALESCE(total_revenue,0) + ?,
                     updated_at = datetime('now')
              WHERE CAST(user_id AS TEXT)=?`
-          ).bind(commission, Number(listing.price || 0), String(listing.seller_id)).run();
+          ).bind(commission, Number(finalPrice || 0), String(listing.seller_id)).run();
           await db.prepare(
             `INSERT INTO transaction_logs (purchase_id, buyer_id, seller_id, amount, type, source_service, note, created_at)
              VALUES (?,?,?,?,?,?,?,datetime('now'))`
@@ -652,7 +767,7 @@ export default {
             id: purchaseId,
             listing_id: b.listing_id,
             seller_id: String(listing.seller_id),
-            price: listing.price
+            price: finalPrice
           }
         });
       }
@@ -731,7 +846,7 @@ export default {
           'SELECT AVG(stars) AS avg, COUNT(*) AS cnt FROM reviews WHERE seller_id=?'
         ).bind(String(listing.seller_id)).first();
         await db.prepare(
-          'UPDATE sellers SET stars=?, review_count=?, badge=CASE WHEN ?>=3 THEN \'trusted\' ELSE \'new\' END WHERE CAST(user_id AS TEXT)=?'
+          "UPDATE sellers SET stars=?, review_count=?, badge=CASE WHEN badge IN ('new','trusted') AND ?>=3 THEN 'trusted' ELSE badge END WHERE CAST(user_id AS TEXT)=?"
         ).bind(Number(sellerAgg.avg || 0).toFixed(1), sellerAgg.cnt, sellerAgg.cnt, String(listing.seller_id)).run();
 
         return sendJSON({ message: 'Review submitted', rating: stars });

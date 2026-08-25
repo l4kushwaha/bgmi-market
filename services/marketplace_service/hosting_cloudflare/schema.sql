@@ -31,23 +31,29 @@ CREATE TABLE IF NOT EXISTS listings (
   price REAL DEFAULT 0,
   level INTEGER DEFAULT 0,
   highest_rank TEXT,
-  mythic_items TEXT,                     -- JSON array
-  legendary_items TEXT,
-  honor_gift TEXT,                       -- JSON array (Honor Gift items)
+   rate_per_1k REAL DEFAULT 0,           -- popularity rate per 1000 points
+   boost_items TEXT,                      -- JSON array of boost items [{n,v,q}]
+   mythic_items TEXT,                     -- JSON array
+   legendary_items TEXT,
+   honor_gift TEXT,                       -- JSON array (Honor Gift items)
   upgraded_guns TEXT,
   titles TEXT,
   x_suit TEXT,                           -- JSON array (X Suit skins)
   supercar TEXT,                         -- JSON array (Supercars)
   ultimate TEXT,                         -- JSON array (Ultimate items)
-  images TEXT,                           -- JSON array of URLs
-  status TEXT DEFAULT 'available',       -- available / pending / sold / hidden
+   images TEXT,                           -- JSON array of URLs
+   account_highlights TEXT,               -- account seller notes/highlights
+   status TEXT DEFAULT 'available',       -- available / pending / sold / hidden
   meetup_available INTEGER DEFAULT 0,    -- 1 = seller offers real meetup for this listing
   city TEXT,                             -- seller city (for city-wise search / meetup)
+  deleted_at TEXT,                       -- soft delete timestamp
   avg_rating REAL DEFAULT 0,
   review_count INTEGER DEFAULT 0,
   seller_verified INTEGER DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
+  express_enabled INTEGER DEFAULT 0,      -- 1 = seller offers express under-5-min delivery
+  express_charge REAL DEFAULT 0,          -- extra charge for express delivery
   FOREIGN KEY (seller_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -96,10 +102,16 @@ CREATE TABLE IF NOT EXISTS purchases (
   price REAL NOT NULL,
   payment_status TEXT DEFAULT 'pending', -- pending / paid / released / refunded
   delivery_status TEXT DEFAULT 'awaiting', -- awaiting / delivered / confirmed
+  delivery_date TEXT,                    -- buyer's preferred delivery date
   delivery_time TEXT,                    -- buyer's chosen boost delivery time
   target_uid TEXT,                       -- popularity boost: buyer's BGMI UID (jis pe pop dalni hai)
   transaction_ref TEXT,
   escrow_held INTEGER DEFAULT 0,         -- 0 = no, 1 = in escrow
+  item_selections TEXT,                   -- JSON: [{n:"Car",v:2000,q:2},...] what buyer selected
+  express_delivery INTEGER DEFAULT 0,    -- 1 = buyer chose express (under 5 min)
+  seller_scheduled_at TEXT,              -- when seller scheduled delivery
+  seller_notes TEXT,                     -- seller note for delivery
+  delivered_at TEXT,                     -- when seller confirmed delivery
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (listing_id) REFERENCES listings(id) ON DELETE CASCADE
@@ -225,6 +237,24 @@ CREATE TABLE IF NOT EXISTS price_config (
 );
 
 -- ========================================================
+-- 🛒 BUYER CART TABLE (temporary item holds)
+-- ========================================================
+CREATE TABLE IF NOT EXISTS buyer_cart (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  buyer_id TEXT NOT NULL,
+  listing_id INTEGER NOT NULL,
+  item_name TEXT NOT NULL,
+  item_points INTEGER DEFAULT 0,
+  quantity INTEGER DEFAULT 1,
+  expires_at TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (buyer_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (listing_id) REFERENCES listings(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_cart_buyer ON buyer_cart(buyer_id);
+CREATE INDEX IF NOT EXISTS idx_cart_listing ON buyer_cart(listing_id);
+
+-- ========================================================
 -- ⚡ INDEXES
 -- ========================================================
 CREATE INDEX IF NOT EXISTS idx_listings_seller_id ON listings(seller_id);
@@ -238,3 +268,4 @@ CREATE INDEX IF NOT EXISTS idx_transactions_seller_id ON transaction_logs(seller
 CREATE INDEX IF NOT EXISTS idx_transactions_buyer_id ON transaction_logs(buyer_id);
 CREATE INDEX IF NOT EXISTS idx_popularity_user_id ON popularity(user_id);
 CREATE INDEX IF NOT EXISTS idx_seller_verify_user_id ON seller_verifications(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_cart_expires ON buyer_cart(expires_at);
