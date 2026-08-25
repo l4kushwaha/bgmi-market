@@ -692,10 +692,10 @@ export default {
       return json({ error: 'not_found' }, 404);
 
     } catch (err) {
+      console.error('chat error', err);
       return new Response(
         JSON.stringify({
-          error: 'server_error',
-          message: err.message
+          error: 'server_error'
         }),
         { status: 500, headers }
       );

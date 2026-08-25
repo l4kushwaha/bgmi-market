@@ -26,12 +26,16 @@ CREATE TABLE IF NOT EXISTS kyc_documents (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
   document_type TEXT, -- Aadhaar / PAN / Other
-  verification_status TEXT DEFAULT 'pending', -- pending / approved / rejected / submitted
+  document_key TEXT, -- R2 key for document photo
+  video_key TEXT, -- R2 key for video KYC
+  liveness_result TEXT, -- JSON: {passed, face_detected, prompts_completed}
+  verification_status TEXT DEFAULT 'pending', -- pending / approved / rejected
   confidence REAL,
   remarks TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   reviewed_at TEXT,
-  reviewed_by TEXT
+  reviewed_by TEXT,
+  approved_at TEXT -- set on approval, used for 7-day auto-purge
 );
 CREATE INDEX IF NOT EXISTS idx_kyc_user ON kyc_documents(user_id);
 CREATE INDEX IF NOT EXISTS idx_kyc_status ON kyc_documents(verification_status);

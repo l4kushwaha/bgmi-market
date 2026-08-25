@@ -12,6 +12,9 @@ A premium, serverless marketplace for buying & selling BGMI (Battlegrounds Mobil
 - **Rate Limiting** — per-endpoint, per-user, per-IP protection
 - **Input Sanitization** — all user inputs validated & sanitized
 - **Refresh Token Security** — rotation on use, revocation on logout/password change
+- **Encrypted Session Storage** — AES-256-GCM at rest, no plaintext tokens in localStorage
+- **Server-side Error Sanitization** — all 5 services strip error details from responses
+- **OTP Brute-force Protection** — per-account rate limit (6 fails / 10 min)
 
 ### 💰 Payment Flow
 1. Buyer creates purchase → escrow record created
@@ -24,7 +27,7 @@ A premium, serverless marketplace for buying & selling BGMI (Battlegrounds Mobil
 ### 🎮 Marketplace Features
 - **Account Listings** — UID, level, rank, items, skins, titles
 - **Popularity Boost** — sell popularity points with target UID
-- **Verified Sellers** — KYC verification, ratings, review system
+- **Verified Sellers** — KYC with guided liveness challenge (head movement), document verification
 - **Real Meetups** — safe in-person exchange option
 - **Built-in Chat** — voice messages, WebRTC calls, effects
 - **Price Estimator** — server-synced pricing config
@@ -242,8 +245,8 @@ cd gateway/hosting_cloudflare && npx wrangler deploy
 | Method | Endpoint | Description |
 |---|---|---|
 | `POST` | `/login` | Email/password login → returns access + refresh tokens |
-| `POST` | `/register` | Register new user → sends verification OTP |
-| `POST` | `/verify-email` | Verify email with OTP |
+| `POST` | `/register` | Register new user → sends verification OTP (auto-login on verify) |
+| `POST` | `/verify-email` | Verify email with OTP → returns access + refresh tokens (auto-login) |
 | `POST` | `/resend-verification` | Resend verification OTP |
 | `POST` | `/refresh` | Rotate refresh token → new access + refresh |
 | `POST` | `/logout` | Revoke refresh token |
@@ -307,13 +310,14 @@ cd gateway/hosting_cloudflare && npx wrangler deploy
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/upload` | Upload eKYC ZIP + share code |
+| `POST` | `/upload` | Submit KYC: Aadhaar(12-digit)/PAN + doc photo + optional video liveness |
 | `GET` | `/seller/upi/:id` | Get seller's UPI (for direct payment) |
 | `GET` | `/profile/:id` | Get user profile |
 | `POST` | `/profile/update` | Update profile (UPI, bio, social) |
 | `GET` | `/stats/:id` | Get seller stats |
 | `GET` | `/admin/queue` | Admin: KYC review queue |
-| `POST` | `/admin/decision` | Admin: approve/reject KYC |
+| `POST` | `/admin/decision` | Admin: approve/reject KYC (sets approved_at for 7-day purge) |
+| `POST` | `/admin/purge-kyc` | Admin: delete Aadhaar + video from DB/R2 after 7 days |
 
 ---
 
@@ -335,11 +339,11 @@ cd gateway/hosting_cloudflare && npx wrangler deploy
 - OTP rate limiting (email + IP)
 
 ⚠️ **To Implement:**
-- [ ] Real KYC OCR/face-match (currently admin manual review)
 - [ ] Webhook notifications for payment events
 - [ ] Audit logging for all admin actions
 - [ ] 2FA for admin accounts
 - [ ] Automated D1 migration system
+- [ ] Real-time face-match (currently skin-tone + head movement liveness)
 
 ---
 

@@ -586,19 +586,25 @@ export default {
             : 'user';
         const insert = await env.AUTH_DB.prepare(
           "INSERT INTO users(email,username,password_hash,role,status,email_verified,created_at) VALUES(?,?,?,?,?,?,datetime('now'))"
-        ).bind(email, cleanUser, hash, role, 'active', 1).run();
+        ).bind(email, cleanUser, hash, role, 'active', 0).run();
 
         const newId = insert.meta?.last_row_id ?? insert.lastInsertRowid;
 
-        // V18: instant-access signup - account is active & verified immediately,
-        // user logs in right after registering (no OTP gate).
-        let verifyRequired = false;
+        /* V24: real-user signup — email OTP gate restored.
+           Auto-login happens on successful OTP at /api/auth/verify-email. */
+        const otp = generateOTP();
+        const expiry = sqliteDatetime(new Date(Date.now() + 10 * 60000));
+        await env.AUTH_DB.prepare('DELETE FROM email_verifications WHERE user_id=?').bind(newId).run();
+        await env.AUTH_DB.prepare(
+          'INSERT INTO email_verifications(user_id,otp,expires_at) VALUES(?,?,?)'
+        ).bind(newId, otp, expiry).run();
+        await sendOtpEmail(email, otp, env);
 
         await logActivity(env, newId, 'register');
         return jsonResponse({
-          message: verifyRequired ? 'Check your email for OTP to activate your account' : 'Registered successfully',
-          user: { id: newId, email, role },
-          verify_required: verifyRequired
+          message: 'Check your email for OTP to activate your account',
+          user: { id: newId, email, username: cleanUser, role },
+          verify_required: true
         });
       }
 
@@ -618,11 +624,17 @@ export default {
 
         const user = results[0];
         if (user.email_verified === 1) {return jsonResponse({ message: 'Email already verified' });}
+        if (user.status === 'banned') {return jsonResponse({ error: 'Account banned. Contact support.' }, 403);}
 
         const { results: vres } = await env.AUTH_DB.prepare(
           "SELECT * FROM email_verifications WHERE user_id=? AND otp=? AND expires_at>datetime('now')"
         ).bind(user.id, String(otp)).all();
-        if (!vres || vres.length === 0) {return jsonResponse({ error: 'Invalid or expired OTP' }, 400);}
+        if (!vres || vres.length === 0) {
+          if (!await checkRateLimit(env, `otpfail:${user.id}`, 6, 600)) {
+            return jsonResponse({ error: 'Too many invalid attempts. Request a new OTP.' }, 429);
+          }
+          return jsonResponse({ error: 'Invalid or expired OTP' }, 400);
+        }
 
         await env.AUTH_DB.prepare(
           'UPDATE users SET email_verified=1 WHERE id=?'
@@ -630,7 +642,19 @@ export default {
         await env.AUTH_DB.prepare(
           'DELETE FROM email_verifications WHERE user_id=?'
         ).bind(user.id).run();
-        return jsonResponse({ message: 'Email verified successfully' });
+
+        // V24: auto-login on successful verification — issue session tokens
+        const access = await jwtSign({ id: user.id, email: user.email, role: user.role || 'user', name: user.username, type: 'access' }, env.JWT_SECRET, '7d');
+        const refresh = await jwtSign({ id: user.id, email: user.email, role: user.role || 'user', name: user.username, type: 'refresh' }, env.JWT_SECRET, '30d');
+        await storeRefreshToken(env, user.id, refresh, '7d');
+        await logActivity(env, user.id, 'login_success');
+
+        return jsonResponse({
+          message: 'Email verified successfully',
+          user: { id: user.id, email: user.email, username: user.username, role: user.role || 'user', name: user.username },
+          access_token: access,
+          refresh_token: refresh
+        });
       }
 
       // RESEND VERIFICATION OTP
@@ -851,7 +875,8 @@ export default {
       return jsonResponse({ error: 'Route not found' }, 404);
 
     } catch (err) {
-      return jsonResponse({ error: err.message || 'Internal Server Error' }, 500);
+      console.error('auth error', err);
+      return jsonResponse({ error: 'Internal Server Error' }, 500);
     }
   }
 };

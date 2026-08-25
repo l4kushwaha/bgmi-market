@@ -16,9 +16,21 @@
   used only at `/api/auth/refresh`.
 - Tokens carry `{ id, email, role }`. The marketplace/chat workers map `id` → the
   acting user for ownership checks (`seller_id` / `buyer_id`).
-- Never store the token in a cookie without `Secure; HttpOnly; SameSite`.
+- Registration flow: register → verify email with OTP → auto-login (tokens returned on verify).
+- OTP brute-force guard: max 6 failed attempts per account → 429 locked for 10 minutes.
+- Banned accounts rejected at login and email-verify (checked against `banned_users` table).
+- Refresh tokens are rotated on every use and revoked on logout / password change.
 
-## 3. Authorization (role & ownership)
+## 3. Encrypted session store (frontend)
+
+- All sensitive localStorage keys (`token`, `user`, `refresh_token`) are encrypted at rest
+  via CryptoJS AES applied transparently through a `Storage.prototype` shim in `app.js`.
+- auth.js uses `ssSet/ssGet/ssRemove` wrappers that delegate to the same shim — no plaintext
+  tokens exist in localStorage.
+- Site-wide protections: right-click disabled, Ctrl+C/U/S/F12 blocked outside form inputs,
+  devtools timing-guarded via debugger trip.
+
+## 4. Authorization (role & ownership)
 
 - Admin-only endpoints (`/api/admin/*`, wallet `/admin/earnings`) require
   `role === "admin"` and reject otherwise (403).
@@ -26,7 +38,7 @@
 - Chat room access: only the buyer or seller of that room.
 - All ownership checks compare the token identity, never trust client-sent ids alone.
 
-## 4. Input validation & rate limiting
+## 5. Input validation & rate limiting
 
 - Email format + password strength (min length, complexity) validated at register/reset.
 - Auth endpoints are IP rate-limited (login, register, OTP requests).
@@ -36,27 +48,44 @@
   UTR numbers. Payee UPI is resolved server-side from the seller's profile — never
   taken from the client.
 - Marketplace/chat validate required fields and numeric types; unknown ids return 404.
+- KYC upload validates document type (Aadhaar 12-digit / PAN ABCDE1234F), file size limits,
+  and video liveness result — auto-rejects if liveness check fails (422).
 
-## 5. Data protection
+## 6. KYC & data protection
 
+- KYC submission requires: document type, ID number (validated server-side), document photo
+  (R2 storage), and optional video liveness challenge (head movement prompts).
+- Liveness result `{passed, face_detected, prompts_completed}` stored as JSON in `kyc_documents`;
+  auto-rejected server-side if `result === 'fail'` or face ratio < 60%.
+- **7-day data purge**: Aadhaar number masked as `XXXX-XXXX-XXXX` on submission; full document
+  photo + video deleted from R2 and `kyc_documents` row removed 7 days after admin approval.
+  Triggered by `POST /admin/purge-kyc`.
 - Passwords hashed with bcryptjs before storage — never stored in plain text.
 - OTPs stored only as hashes with expiry (`used` flag prevents replay).
-- Message `ciphertext` field supports client-side encryption for sensitive content;
-  keep `sensitive: true` for anything private.
-- D1 databases: do not back up into the repo; backups go to encrypted storage.
+- All worker error responses are sanitized — no `err.message` leakage to clients;
+  full errors logged server-side only.
 
-## 6. CORS & gateway
+## 7. CORS & gateway
 
 - Gateway worker sets a strict `Access-Control-Allow-Origin` (the Vercel frontend
   origin only), not `*`.
 - Public gateway paths are allow-listed; everything else requires a JWT.
 - The gateway forwards the original `Authorization` header and never logs tokens.
 
-## 7. Production checklist
+## 8. Service bindings
 
-- [ ] Rotate `JWT_SECRET` and move it to `wrangler secret put`.
-- [ ] Move admin credentials out of `wrangler.toml` into secrets.
-- [ ] Set `ADMIN_UPI_ID` / `ADMIN_UPI_NAME` on the wallet worker (platform fallback payee).
+- Wallet → Marketplace: uses Cloudflare service binding (`env.MARKETPLACE.fetch()`)
+  instead of direct fetch to `*.workers.dev` (blocked by Error 1042).
+- Each worker's `wrangler.toml` declares its service bindings; production IDs set via
+  `npx wrangler secret put`.
+
+## 9. Production checklist
+
+- [x] Rotate `JWT_SECRET` and move it to `wrangler secret put`.
+- [x] Move admin credentials out of `wrangler.toml` into secrets.
+- [x] Set `ADMIN_UPI_ID` / `ADMIN_UPI_NAME` on the wallet worker (platform fallback payee).
+- [x] Enforce HTTPS on all worker routes and the Vercel app.
+- [x] Deploy all 5 services with sanitized error responses.
 - [ ] Rotate the sample D1 database ids if they map to real data.
-- [ ] Enforce HTTPS on all worker routes and the Vercel app.
 - [ ] Run `wrangler secret list` per worker to confirm only intended secrets exist.
+- [ ] Set up D1 backup schedule or point-in-time recovery.

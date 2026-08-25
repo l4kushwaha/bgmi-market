@@ -23,9 +23,15 @@ Request/response bodies are JSON unless noted.
 ## Auth worker
 
 ### POST /api/auth/register — public
-Body: `{ "full_name" | "name", "email", "password", "phone"? }`
-→ `200/201 { message, user:{id,email,role,name} }`
+Body: `{ "username", "email", "password" }`
+→ `200 { message, user:{id,email,role,name}, verify_required:true }`
 - Validates email + password strength; rate-limited per IP.
+- Sends OTP email; account remains unverified until OTP submitted.
+
+### POST /api/auth/verify-email — public
+Body: `{ "email", "otp" }` → `200 { access_token, refresh_token, user:{...} }`
+- Verifies OTP, activates account, auto-logs in with fresh tokens.
+- Brute-force guard: 6 failed attempts per account → 429 for 10 min.
 
 ### POST /api/auth/login — public
 Body: `{ "email", "password" }`
@@ -122,10 +128,13 @@ Body: `{ order_id }`
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/upload` | auth | Multipart KYC upload `{user_id, name, id_number, id_image}` → stores image (R2), status `pending`. |
+| POST | `/upload` | auth | KYC: Aadhaar(12-digit)/PAN + doc photo + optional video liveness challenge. Body: FormData `{user_id, name, document_type, id_number, file, video?, liveness_result?}` → `{message, document_type, has_video, liveness_passed}`. Auto-rejects if liveness fails (422). |
 | GET | `/profile/<user_id>` | auth | KYC/profile status. |
 | POST | `/profile/update` | auth | Update profile fields. |
 | GET | `/stats/<seller_id>` | auth | Seller stats. |
+| GET | `/admin/queue` | auth (admin) | Pending KYC submissions (status='pending'). |
+| POST | `/admin/decision` | auth (admin) | Approve/reject KYC. Sets `approved_at` on approval. |
+| POST | `/admin/purge-kyc` | auth (admin) | Auto-delete Aadhaar + video from R2/DB 7 days after approval. |
 | GET | `/health` | public | Health check. |
 
 ---

@@ -1224,7 +1224,8 @@ export default {
 
     } catch (err) {
       console.error(err);
-      return sendJSON({ error: 'Server error', details: err.message }, 500);
+      console.error('listings create error', err);
+      return sendJSON({ error: 'Server error' }, 500);
     }
 
     return sendJSON({ error: 'Not found' }, 404);
