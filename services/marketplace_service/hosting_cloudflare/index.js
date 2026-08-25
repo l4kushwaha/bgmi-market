@@ -410,7 +410,7 @@ export default {
            mythic_items,legendary_items,honor_gift,upgraded_guns,titles,
            x_suit,supercar,ultimate,images,meetup_available,city,
            rate_per_1k,boost_items,status,avg_rating,review_count,seller_verified)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'available',0,0,0)`
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'available',0,0,0)`
         ).bind(
           String(user.id),
           cleanUid,
