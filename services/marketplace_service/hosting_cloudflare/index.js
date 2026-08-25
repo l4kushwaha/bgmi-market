@@ -11,12 +11,7 @@
  */
 
 const hits = new Map();
-
-// Periodic cleanup: purge rate limiter entries older than 5 minutes
-setInterval(() => {
-  const cutoff = Date.now() - 300000;
-  for (const [k, v] of hits) { if (v.t < cutoff) hits.delete(k); }
-}, 60000);
+let lastCleanup = 0;
 
 export default {
   async scheduled(event, env, ctx) {
@@ -30,6 +25,14 @@ export default {
     const path = url.pathname;
     const method = request.method.toUpperCase();
     const db = env.MARKETPLACE_DB;
+
+    // Lazy cleanup: purge rate limiter entries older than 5 minutes
+    const now = Date.now();
+    if (now - lastCleanup > 60000) {
+      lastCleanup = now;
+      const cutoff = now - 300000;
+      for (const [k, v] of hits) { if (v.t < cutoff) hits.delete(k); }
+    }
 
     const SECURITY_HEADERS = {
   'Cache-Control': 'no-store',
