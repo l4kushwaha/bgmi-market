@@ -768,7 +768,7 @@ export default {
         }
 
         const { results } = await env.AUTH_DB.prepare(
-          'SELECT id FROM users WHERE email=? COLLATE NOCASE'
+          'SELECT id FROM users WHERE email=? COLLATE NOCASE AND (deleted_at IS NULL)'
         ).bind(email).all();
 
         if (!results || results.length === 0)

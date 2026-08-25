@@ -235,10 +235,14 @@ export default {
           `INSERT INTO user_profiles (user_id, name, gender, address, pan_number, bio, instagram, facebook, upi_id, photo_url, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
            ON CONFLICT(user_id) DO UPDATE SET
-             name=excluded.name, gender=excluded.gender, address=excluded.address,
-             pan_number=excluded.pan_number, bio=excluded.bio,
-             instagram=excluded.instagram, facebook=excluded.facebook,
-             upi_id=excluded.upi_id, photo_url=excluded.photo_url,
+             name=excluded.name, gender=COALESCE(excluded.gender, user_profiles.gender),
+             address=COALESCE(excluded.address, user_profiles.address),
+             pan_number=COALESCE(excluded.pan_number, user_profiles.pan_number),
+             bio=COALESCE(excluded.bio, user_profiles.bio),
+             instagram=COALESCE(excluded.instagram, user_profiles.instagram),
+             facebook=COALESCE(excluded.facebook, user_profiles.facebook),
+             upi_id=COALESCE(excluded.upi_id, user_profiles.upi_id),
+             photo_url=COALESCE(excluded.photo_url, user_profiles.photo_url),
              updated_at=CURRENT_TIMESTAMP`
         ).bind(userId, cleanText(name,100)||null, cleanText(gender,20)||null, cleanText(address,300)||null,
           cleanText(pan_number,20).toUpperCase()||null, cleanText(bio,200)||null,
@@ -249,6 +253,8 @@ export default {
 
       /* ===== Seller stats ===== */
       if (url.pathname.startsWith('/stats/') && request.method === 'GET') {
+        const user = await authUser();
+        if (!user) {return json({ error: 'unauthorized' }, 401);}
         const sellerId = url.pathname.split('/').pop();
         const stats = await VERIFICATION_DB.prepare('SELECT * FROM seller_stats WHERE seller_id = ?').bind(sellerId).first();
         return json(stats || { seller_id: sellerId, total_ids_sold: 0, badge: 'New Seller' });
