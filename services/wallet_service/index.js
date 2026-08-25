@@ -98,7 +98,13 @@ export default {
         try {
           const n = String(orderId || '').replace(/[^0-9]/g, '').slice(0, 12);
           if (!/^[0-9]+$/.test(n)) {return null;}
-          const res = await fetch(`${MARKETPLACE_URL}/api/listings/${n}`);
+          const url = `${MARKETPLACE_URL}/api/listings/${n}`;
+          const mreq = new Request(url, { method: 'GET' });
+          /* Service binding required: plain fetch() to another worker's *.workers.dev
+             URL is blocked by Cloudflare (error 1042). */
+          const res = env.MARKETPLACE
+            ? await env.MARKETPLACE.fetch(mreq)
+            : await fetch(mreq);
           if (!res.ok) {return null;}
           return await res.json();
         } catch (e) {

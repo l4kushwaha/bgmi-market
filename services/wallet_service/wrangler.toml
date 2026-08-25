@@ -15,6 +15,12 @@ VERIFY_URL = "https://verification_service.bgmi-gateway.workers.dev"
 binding = "VERIFICATION_SERVICE"
 service = "verification_service"
 
+# Service binding for worker-to-worker calls (plain fetch to *.workers.dev is blocked by
+# Cloudflare with error 1042, breaking /pay/service-charge order validation).
+[[services]]
+binding = "MARKETPLACE"
+service = "bgmi_marketplace_service"
+
 # Secrets (set via `wrangler secret put bgmi-marketplace <NAME>`, never commit):
 #   JWT_SECRET      – shared JWT signing secret (must match auth-service)
 #   ADMIN_UPI_ID    – platform UPI ID used when the seller has no UPI set
