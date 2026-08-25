@@ -849,7 +849,7 @@ export default {
           'SELECT AVG(stars) AS avg, COUNT(*) AS cnt FROM reviews WHERE seller_id=?'
         ).bind(String(listing.seller_id)).first();
         await db.prepare(
-          "UPDATE sellers SET stars=?, review_count=?, badge=CASE WHEN badge IN ('new','trusted') AND ?>=3 THEN 'trusted' ELSE badge END WHERE CAST(user_id AS TEXT)=?"
+          "UPDATE sellers SET stars=?, review_count=?, badge=CASE WHEN badge='new' AND ?>=3 THEN 'trusted' ELSE badge END WHERE CAST(user_id AS TEXT)=?"
         ).bind(Number(sellerAgg.avg || 0).toFixed(1), sellerAgg.cnt, sellerAgg.cnt, String(listing.seller_id)).run();
 
         return sendJSON({ message: 'Review submitted', rating: stars });
@@ -906,7 +906,7 @@ export default {
           return sendJSON({ message: 'Request already pending', request: existing, already_pending: true });
         }
 
-        const badge = ['trusted', 'gold', 'diamond'].includes(String(user.role)) ? String(user.role) : 'trusted';
+        const badge = 'trusted';
         const insert = await db.prepare(
           `INSERT INTO seller_verifications (user_id, status, badge, created_at)
            VALUES (?, 'pending', ?, datetime('now'))`
@@ -1314,7 +1314,7 @@ export default {
 
         // badge action: set seller badge (professional tiers)
         if (action === 'badge') {
-          const allowedBadges = ['new', 'verified', 'veteran', 'trusted', 'elite', 'gold'];
+          const allowedBadges = ['new', 'verified', 'veteran', 'trusted', 'elite', 'gold', 'diamond', 'secure'];
           if (!allowedBadges.includes(b.badge)) {return sendJSON({ error: 'Invalid badge. Allowed: ' + allowedBadges.join(', ') }, 400);}
           await db.prepare(
             'UPDATE sellers SET badge=?, updated_at=datetime(\'now\') WHERE CAST(user_id AS TEXT)=?'

@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS sellers (
   user_id TEXT PRIMARY KEY,              -- references users(id)
   stars REAL DEFAULT 0,
   review_count INTEGER DEFAULT 0,
-  badge TEXT DEFAULT 'new',              -- new / trusted
+  badge TEXT DEFAULT 'new',              -- new / trusted / verified / veteran / elite / gold / diamond / secure
   status TEXT DEFAULT 'active',          -- active / banned
   total_sales INTEGER DEFAULT 0,
   total_revenue REAL DEFAULT 0,
