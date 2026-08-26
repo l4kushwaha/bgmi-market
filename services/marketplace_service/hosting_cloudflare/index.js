@@ -173,7 +173,7 @@ export default {
       ultimate: safeJSON(r.ultimate),
       images: safeJSON(r.images),
       rate_per_1k: r.rate_per_1k || 0,
-      boost_items: r.boost_items || null,
+      boost_items: safeJSON(r.boost_items),
       express_enabled: r.express_enabled || 0,
       express_charge: r.express_charge || 0,
     });
@@ -539,6 +539,7 @@ export default {
       if (path.startsWith('/api/listings/') && method === 'PUT') {
         const user = await verifyJWT(request);
         if (!user) {return sendJSON({ error: 'Unauthorized' }, 401);}
+        if (!rate(`upd-listing:${user.id}`, 20, 60000)) return sendJSON({ error: 'Too many requests' }, 429);
 
         const listingId = path.split('/')[3];
         const listing = await db.prepare('SELECT * FROM listings WHERE id=? AND deleted_at IS NULL').bind(listingId).first();
@@ -583,7 +584,7 @@ export default {
           b.delivery_time !== undefined ? (String(b.delivery_time || '').replace(/[<>&'"`]/g, '').trim().slice(0, 60) || null) : (listing.delivery_time || null),
           b.meetup_available !== undefined ? ((b.meetup_available === 1 || b.meetup_available === true || String(b.meetup_available) === '1') ? 1 : 0) : (Number(listing.meetup_available) || 0),
           b.city !== undefined ? (cleanVal(b.city, 40) || null) : (listing.city || null),
-          (b.express_enabled === 1 || b.express_enabled === true || String(b.express_enabled) === '1') ? 1 : (listing.express_enabled || 0),
+          b.express_enabled !== undefined ? ((b.express_enabled === 1 || b.express_enabled === true || String(b.express_enabled) === '1') ? 1 : 0) : (listing.express_enabled || 0),
           b.express_charge !== undefined ? Math.max(0, Math.min(10000000, Number(b.express_charge) || 0)) : (listing.express_charge || 0),
           b.account_highlights !== undefined ? (String(b.account_highlights || '').replace(/[<>&'"`]/g, '').trim().slice(0, 500) || null) : (listing.account_highlights || null),
           listingId
@@ -596,6 +597,7 @@ export default {
       if (path.startsWith('/api/listings/') && method === 'DELETE') {
         const user = await verifyJWT(request);
         if (!user) {return sendJSON({ error: 'Unauthorized' }, 401);}
+        if (!rate(`del-listing:${user.id}`, 10, 60000)) return sendJSON({ error: 'Too many requests' }, 429);
 
         const listingId = path.split('/')[3];
         const listing = await db.prepare('SELECT * FROM listings WHERE id=? AND deleted_at IS NULL').bind(listingId).first();
@@ -635,6 +637,7 @@ export default {
       if (path.startsWith('/api/purchases/') && method === 'PATCH') {
         const user = await verifyJWT(request);
         if (!user) {return sendJSON({ error: 'Unauthorized' }, 401);}
+        if (!rate(`patch-purchase:${user.id}`, 20, 60000)) return sendJSON({ error: 'Too many requests' }, 429);
         const parts = path.split('/');
         // ['', 'api', 'purchases', <id>, <action>?]
         const purchaseId = parts[3];
@@ -896,7 +899,7 @@ export default {
         await db.prepare(
           `INSERT INTO reviews (listing_id, buyer_id, seller_id, stars, comment, created_at)
            VALUES (?,?,?,?,?,datetime('now'))`
-        ).bind(b.listing_id, String(user.id), String(listing.seller_id), stars, b.comment || '').run();
+        ).bind(b.listing_id, String(user.id), String(listing.seller_id), stars, cleanVal(b.comment || '', 500)).run();
 
         const agg = await db.prepare(
           'SELECT AVG(stars) AS avg, COUNT(*) AS cnt FROM reviews WHERE listing_id=?'
@@ -1011,7 +1014,7 @@ export default {
 
         await db.prepare(
           'UPDATE seller_verifications SET status=?, reason=?, reviewed_by=?, reviewed_at=datetime(\'now\') WHERE id=?'
-        ).bind(finalStatus, b.reason || '', String(user.id), id).run();
+        ).bind(finalStatus, cleanVal(b.reason || '', 300), String(user.id), id).run();
 
         if (action === 'approve') {
           const badge = b.badge || req.badge || 'trusted';
@@ -1025,7 +1028,7 @@ export default {
           ).bind(String(req.user_id)).first();
           if (!seller) {
             await db.prepare(
-              "INSERT INTO sellers (user_id, stars, review_count, badge, status, total_sales, total_revenue) VALUES (?,0,0,?, 'active',0,0)"
+              "INSERT INTO sellers (user_id, stars, review_count, badge, status, total_sales, total_revenue, pending_commission, hidden) VALUES (?,0,0,?, 'active',0,0,0,0)"
             ).bind(String(req.user_id), badge).run();
           }
         }
@@ -1102,6 +1105,7 @@ export default {
       if (path === '/api/seller/profile' && method === 'PUT') {
         const user = await verifyJWT(request);
         if (!user) {return sendJSON({ error: 'Unauthorized' }, 401);}
+        if (!rate(`seller-profile:${user.id}`, 10, 60000)) return sendJSON({ error: 'Too many requests' }, 429);
         await ensureSeller(user.id);
 
         const b = await request.json().catch(() => ({}));
@@ -1203,10 +1207,10 @@ export default {
         if (parts.length < 5) {return sendJSON({ error: 'Invalid path' }, 400);}
         const id = Number(parts[3]);
         if (!Number.isFinite(id) || id < 1) return sendJSON({ error: 'Invalid ID' }, 400);
-        const action = parts[4]; // respond / complete
-
         const user = await verifyJWT(request);
-        if (!user) {return sendJSON({ error: 'Unauthorized' }, 401);}
+        if (!user) { return sendJSON({ error: 'Unauthorized' }, 401); }
+        if (!rate(`meetup-respond:${user.id}`, 10, 60000)) return sendJSON({ error: 'Too many requests' }, 429);
+        const action = parts[4]; // respond / complete
 
         const req = await db.prepare('SELECT * FROM meetup_requests WHERE id=?').bind(id).first();
         if (!req) {return sendJSON({ error: 'Meetup request not found' }, 404);}
