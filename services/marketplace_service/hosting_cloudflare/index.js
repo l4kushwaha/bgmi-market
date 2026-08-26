@@ -417,6 +417,7 @@ export default {
       /* ================= GET SINGLE LISTING ================= */
       if (path.startsWith('/api/listings/') && method === 'GET' && !path.includes('/create')) {
         const listingId = Number(path.split('/')[3]);
+        if (!Number.isFinite(listingId) || listingId < 1) return sendJSON({ error: 'Invalid listing ID' }, 400);
         const listing = await db.prepare('SELECT * FROM listings WHERE id=? AND deleted_at IS NULL').bind(listingId).first();
         if (!listing) {return sendJSON({ error: 'Listing not found' }, 404);}
         return sendJSON(normalize(listing));
@@ -498,7 +499,7 @@ export default {
           deliveryTime,
           price,
           b.level || 0,
-          b.highest_rank || '',
+          cleanVal(b.highest_rank, 60) || '',
           JSON.stringify(b.mythic_items || []),
           JSON.stringify(b.legendary_items || []),
           JSON.stringify(b.honor_gift ?? (b.gift_items || [])),
@@ -570,8 +571,8 @@ export default {
           cleanTitle ?? b.title ?? listing.title,
           (cleanDesc ?? b.description) || listing.description || '',
           price || b.price || Number(listing.price) || 0,
-          b.level !== undefined ? (b.level || 0) : (listing.level ?? 0),
-          b.highest_rank !== undefined ? (b.highest_rank || '') : (listing.highest_rank || ''),
+          b.level !== undefined ? (Number(b.level) || 0) : (listing.level ?? 0),
+          b.highest_rank !== undefined ? (cleanVal(b.highest_rank, 60) || '') : (listing.highest_rank || ''),
           JSON.stringify(b.mythic_items !== undefined ? b.mythic_items : safeParseArr(listing.mythic_items)),
           JSON.stringify(b.legendary_items !== undefined ? b.legendary_items : safeParseArr(listing.legendary_items)),
           JSON.stringify(b.honor_gift !== undefined ? b.honor_gift : (b.gift_items !== undefined ? b.gift_items : safeParseArr(listing.honor_gift))),
@@ -765,21 +766,22 @@ export default {
         const b = await request.json().catch(() => ({}));
         if (!b.listing_id) {return sendJSON({ error: 'listing_id required' }, 400);}
 
-        const listing = await db.prepare('SELECT * FROM listings WHERE id=? AND deleted_at IS NULL').bind(b.listing_id).first();
-        if (!listing) {return sendJSON({ error: 'Listing not found' }, 404);}
-        if (listing.status !== 'available') {return sendJSON({ error: 'Listing not available' }, 409);}
-        if (String(listing.seller_id) === String(user.id)) {
+        const reserve = await db.prepare(
+          "UPDATE listings SET status='sold', updated_at=datetime('now') WHERE id=? AND status='available' AND deleted_at IS NULL RETURNING *"
+        ).bind(b.listing_id).first();
+        if (!reserve) return sendJSON({ error: 'Listing no longer available' }, 409);
+
+        if (String(reserve.seller_id) === String(user.id)) {
           return sendJSON({ error: 'Cannot buy your own listing' }, 400);
         }
 
-        // Buyer must ALWAYS provide the in-game UID where delivery should happen
         let targetUid = String(b.target_uid || '').replace(/[^0-9]/g, '').slice(0, 12);
         if (!/^[0-9]{6,12}$/.test(targetUid)) {
           return sendJSON({ error: 'Valid target_uid required (your BGMI UID for delivery)' }, 400);
         }
 
-        const expressCharge = (b.express_delivery && listing.express_enabled) ? (Number(listing.express_charge) || 0) : 0;
-        const finalPrice = Number(listing.price || 0) + expressCharge;
+        const expressCharge = (b.express_delivery && reserve.express_enabled) ? (Number(reserve.express_charge) || 0) : 0;
+        const finalPrice = Number(reserve.price || 0) + expressCharge;
         if (!Number.isFinite(finalPrice) || finalPrice <= 0) {
           return sendJSON({ error: 'Invalid listing price' }, 400);
         }
@@ -790,7 +792,7 @@ export default {
         ).bind(
           b.listing_id,
           String(user.id),
-          String(listing.seller_id),
+          String(reserve.seller_id),
           finalPrice,
           String(b.delivery_date || '').replace(/[<>&'"`]/g, '').trim().slice(0, 20) || null,
           String(b.delivery_time || '').replace(/[<>&'"`]/g, '').trim().slice(0, 60) || null,
