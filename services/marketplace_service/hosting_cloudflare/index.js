@@ -50,12 +50,12 @@ export default {
 
     const CORS_HEADERS = {
       'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': 'https://bgmi-frontend.vercel.app', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+      'Access-Control-Allow-Origin': 'https://bgmi-frontend.vercel.app',
       'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type,Authorization',
       ...SECURITY_HEADERS
     };
-    if (method === 'OPTIONS') {return new Response('ok', { headers: CORS_HEADERS });}
+    if (method === 'OPTIONS') {return new Response(null, { status: 204, headers: CORS_HEADERS });}
 
     const sendJSON = (obj, status = 200) =>
       new Response(JSON.stringify(obj), { status, headers: CORS_HEADERS });
@@ -145,7 +145,7 @@ export default {
         .bind(sid).first();
       if (!s) {
         await db.prepare(
-          "INSERT INTO sellers (user_id, stars, review_count, badge, status, total_sales, total_revenue, pending_commission, hidden) VALUES (?,0,0,'new','active',0,0,0,0)"
+          "INSERT OR IGNORE INTO sellers (user_id, stars, review_count, badge, status, total_sales, total_revenue, pending_commission, hidden) VALUES (?,0,0,'new','active',0,0,0,0)"
         ).bind(sid).run();
       }
     }
@@ -192,8 +192,9 @@ export default {
       try {
         const b = await request.json().catch(() => ({}));
         const texts = Array.isArray(b.text) ? b.text : (typeof b.text === 'string' ? [b.text] : []);
+        const safeTexts = texts.map(t => String(t || '').slice(0, 5000));
         const targetLang = String(b.target_lang || '').toUpperCase().replace(/[^A-Z-]/g, '').slice(0, 5);
-        if (!texts.length || !targetLang) {
+        if (!safeTexts.length || !targetLang) {
           return sendJSON({ error: 'text (array or string) and target_lang required' }, 400);
         }
         const DEEPL_KEY = env.DEEPL_API_KEY;
@@ -206,11 +207,11 @@ export default {
             'Authorization': `DeepL-Auth-Key ${DEEPL_KEY}`,
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({ text: texts.slice(0, 50), target_lang: targetLang })
+          body: JSON.stringify({ text: safeTexts.slice(0, 50), target_lang: targetLang })
         });
         const deeplData = await deeplRes.json();
         if (!deeplRes.ok) {
-          return sendJSON({ error: deeplData.message || 'Translation failed' }, deeplRes.status);
+          return sendJSON({ error: 'Translation failed' }, 500);
         }
         return sendJSON({
           translations: (deeplData.translations || []).map(t => t.text)
@@ -257,26 +258,30 @@ export default {
       const user = await verifyJWT(request);
       if (!user || user.role !== 'admin') {return sendJSON({ error: 'Admin only' }, 403);}
 
-      const b = await request.json().catch(() => ({}));
-      const updates = b.config || b;
-      if (!updates || typeof updates !== 'object') {return sendJSON({ error: 'Config object required' }, 400);}
+      try {
+        const b = await request.json().catch(() => ({}));
+        const updates = b.config || b;
+        if (!updates || typeof updates !== 'object') {return sendJSON({ error: 'Config object required' }, 400);}
 
-      let n = 0;
-      for (const [key, raw] of Object.entries(updates)) {
-        const value = Number(raw);
-        if (!Object.prototype.hasOwnProperty.call(PRICE_DEFAULTS, key)) {continue;}
-        if (!isFinite(value) || value < 0 || value > 10000000) {return sendJSON({ error: `Invalid value for ${key}` }, 400);}
-        await db.prepare(
-          `INSERT INTO price_config (key, value, updated_at) VALUES (?,?,datetime('now'))
-           ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=datetime('now')`
-        ).bind(key, value).run();
-        n++;
+        let n = 0;
+        for (const [key, raw] of Object.entries(updates)) {
+          const value = Number(raw);
+          if (!Object.prototype.hasOwnProperty.call(PRICE_DEFAULTS, key)) {continue;}
+          if (!isFinite(value) || value < 0 || value > 10000000) {return sendJSON({ error: `Invalid value for ${key}` }, 400);}
+          await db.prepare(
+            `INSERT INTO price_config (key, value, updated_at) VALUES (?,?,datetime('now'))
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=datetime('now')`
+          ).bind(key, value).run();
+          n++;
+        }
+        if (!n) {return sendJSON({ error: 'No valid keys provided' }, 400);}
+        const { results } = await db.prepare('SELECT key, value FROM price_config').all();
+        const overrides = {};
+        for (const r of results) {overrides[r.key] = Number(r.value);}
+        return sendJSON({ message: `Saved ${n} price(s)`, config: { ...PRICE_DEFAULTS, ...overrides } });
+      } catch(err) {
+        return sendJSON({ error: 'Failed to update config' }, 500);
       }
-      if (!n) {return sendJSON({ error: 'No valid keys provided' }, 400);}
-      const { results } = await db.prepare('SELECT key, value FROM price_config').all();
-      const overrides = {};
-      for (const r of results) {overrides[r.key] = Number(r.value);}
-      return sendJSON({ message: `Saved ${n} price(s)`, config: { ...PRICE_DEFAULTS, ...overrides } });
     }
 
     try {
@@ -390,7 +395,7 @@ export default {
 
         if (filter === 'own' && user) {
           q += ' AND CAST(l.seller_id AS TEXT)=?';
-          binds.push(String(user.seller_id || user.id));
+          binds.push(String(user.id));
         }
 
         if (filter === 'meetup') {q += ' AND l.meetup_available=1';}
@@ -398,8 +403,10 @@ export default {
         else if (filter === 'price_low') {q += ' ORDER BY l.price ASC';}
         else {q += ' ORDER BY l.created_at DESC';}
 
-        const limit = Math.min(Number(url.searchParams.get('limit') || 100), 200);
-        const offset = Number(url.searchParams.get('offset') || 0);
+        let limit = Math.min(Number(url.searchParams.get('limit') || 100), 200);
+        let offset = Number(url.searchParams.get('offset') || 0);
+        if (!Number.isFinite(limit) || limit < 1) limit = 100;
+        if (!Number.isFinite(offset) || offset < 0) offset = 0;
         q += ' LIMIT ? OFFSET ?';
         binds.push(limit, offset);
 
@@ -519,7 +526,7 @@ export default {
         const listingId = path.split('/')[3];
         const listing = await db.prepare('SELECT * FROM listings WHERE id=? AND deleted_at IS NULL').bind(listingId).first();
         if (!listing) {return sendJSON({ error: 'Listing not found' }, 404);}
-        if (String(listing.seller_id) !== String(user.seller_id || user.id)
+        if (String(listing.seller_id) !== String(user.id)
             && String(user.role).toLowerCase() !== 'admin') {
           return sendJSON({ error: 'Forbidden' }, 403);}
         const b = await request.json().catch(() => ({}));
@@ -537,7 +544,7 @@ export default {
         const listing = await db.prepare('SELECT * FROM listings WHERE id=? AND deleted_at IS NULL').bind(listingId).first();
         if (!listing) {return sendJSON({ error: 'Listing not found' }, 404);}
 
-        if (String(listing.seller_id) !== String(user.seller_id || user.id)
+        if (String(listing.seller_id) !== String(user.id)
             && String(user.role).toLowerCase() !== 'admin') {
           return sendJSON({ error: 'Forbidden' }, 403);
         }
@@ -594,7 +601,7 @@ export default {
         const listing = await db.prepare('SELECT * FROM listings WHERE id=? AND deleted_at IS NULL').bind(listingId).first();
         if (!listing) {return sendJSON({ error: 'Listing not found' }, 404);}
 
-        if (String(listing.seller_id) !== String(user.seller_id || user.id)
+        if (String(listing.seller_id) !== String(user.id)
             && String(user.role).toLowerCase() !== 'admin') {
           return sendJSON({ error: 'Forbidden' }, 403);
         }
@@ -768,6 +775,9 @@ export default {
 
         const expressCharge = (b.express_delivery && listing.express_enabled) ? (Number(listing.express_charge) || 0) : 0;
         const finalPrice = Number(listing.price || 0) + expressCharge;
+        if (!Number.isFinite(finalPrice) || finalPrice <= 0) {
+          return sendJSON({ error: 'Invalid listing price' }, 400);
+        }
 
         const insert = await db.prepare(
           `INSERT INTO purchases (listing_id, buyer_id, seller_id, price, payment_status, delivery_status, delivery_date, delivery_time, target_uid, item_selections, express_delivery, created_at, updated_at)
@@ -861,6 +871,7 @@ export default {
       if (path === '/api/reviews' && method === 'POST') {
         const user = await verifyJWT(request);
         if (!user) {return sendJSON({ error: 'Unauthorized' }, 401);}
+        if (!rate('review:' + user.id, 10, 60000)) return sendJSON({ error: 'Too many reviews. Try later.' }, 429);
 
         const b = await request.json().catch(() => ({}));
         if (!b.listing_id || !b.stars) {return sendJSON({ error: 'listing_id & stars required' }, 400);}
@@ -1392,8 +1403,7 @@ export default {
       }
 
     } catch (err) {
-      console.error(err);
-      console.error('listings create error', err);
+      console.error('server error:', err);
       return sendJSON({ error: 'Server error' }, 500);
     }
 
