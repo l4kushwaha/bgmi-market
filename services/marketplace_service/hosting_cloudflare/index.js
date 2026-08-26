@@ -897,7 +897,7 @@ export default {
         if (dup) {return sendJSON({ error: 'Already reviewed' }, 409);}
 
         await db.prepare(
-          `INSERT INTO reviews (listing_id, buyer_id, seller_id, stars, comment, created_at)
+          `INSERT OR IGNORE INTO reviews (listing_id, buyer_id, seller_id, stars, comment, created_at)
            VALUES (?,?,?,?,?,datetime('now'))`
         ).bind(b.listing_id, String(user.id), String(listing.seller_id), stars, cleanVal(b.comment || '', 500)).run();
 
@@ -936,7 +936,8 @@ export default {
 
       /* ================= POPULARITY LEADERBOARD ================= */
       if (path === '/api/popularity/leaderboard' && method === 'GET') {
-        const limit = Math.min(Number(url.searchParams.get('limit') || 10), 50);
+        let limit = Math.min(Number(url.searchParams.get('limit') || 10), 50);
+        if (!Number.isFinite(limit) || limit < 1) limit = 10;
         const { results } = await db.prepare(`
           SELECT p.user_id, SUM(p.points) AS total_points,
                  COUNT(DISTINCT p.id) AS boosts
@@ -997,6 +998,7 @@ export default {
       if (path.startsWith('/api/admin/seller-verifications/') && method === 'POST') {
         const user = await verifyJWT(request);
         if (!user || user.role !== 'admin') {return sendJSON({ error: 'Admin only' }, 403);}
+        if (!rate(`admin-verify:${user.id}`, 30, 60000)) return sendJSON({ error: 'Too many requests' }, 429);
 
         const id = Number(path.split('/').pop());
         if (!Number.isFinite(id) || id < 1) return sendJSON({ error: 'Invalid ID' }, 400);
@@ -1123,7 +1125,8 @@ export default {
       /* ================= SELLERS DIRECTORY (city-wise search) ================= */
       if (path === '/api/sellers' && method === 'GET') {
         const city = cleanVal(url.searchParams.get('city'), 40);
-        const limit = Math.min(Number(url.searchParams.get('limit') || 50), 100);
+        let limit = Math.min(Number(url.searchParams.get('limit') || 50), 100);
+        if (!Number.isFinite(limit) || limit < 1) limit = 50;
         let q = `
           SELECT s.user_id, s.stars, s.review_count, s.badge, s.status, s.total_sales, s.total_revenue,
                  s.city, s.meetup_note,
@@ -1338,6 +1341,7 @@ export default {
       if (path.startsWith('/api/admin/commissions/') && method === 'POST') {
         const user = await verifyJWT(request);
         if (!user || user.role !== 'admin') {return sendJSON({ error: 'Admin only' }, 403);}
+        if (!rate(`admin-comm:${user.id}`, 30, 60000)) return sendJSON({ error: 'Too many requests' }, 429);
 
         const id = Number(path.split('/').pop());
         if (!Number.isFinite(id) || id < 1) return sendJSON({ error: 'Invalid ID' }, 400);
@@ -1378,6 +1382,7 @@ export default {
 
         const user = await verifyJWT(request);
         if (!user || user.role !== 'admin') {return sendJSON({ error: 'Admin only' }, 403);}
+        if (!rate(`admin-seller:${user.id}`, 30, 60000)) return sendJSON({ error: 'Too many requests' }, 429);
 
         const b = await request.json().catch(() => ({}));
 
