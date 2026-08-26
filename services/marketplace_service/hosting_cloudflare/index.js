@@ -1,12 +1,15 @@
 /**
  * =====================================================
- * BGMI Marketplace Service v5.0.0
+ * BGMI Marketplace Service v5.1.0
  * =====================================================
- * âœ… Listings CRUD + single listing GET
- * âœ… Reviews (create + seller aggregates)
- * âœ… Purchases (escrow tracking)
- * âœ… Admin moderation (list all, moderate status)
- * âœ… JWT Auth (shared secret)
+ * ✅ Listings CRUD + single listing GET
+ * ✅ Reviews (create + seller aggregates)
+ * ✅ Purchases (escrow tracking + ensureSeller)
+ * ✅ Admin moderation (list all, moderate status)
+ * ✅ JWT Auth (shared secret)
+ * ✅ DeepL translation proxy (secure backend)
+ * ✅ Badge system (new/verified/trusted/secure/diamond)
+ * ✅ Rate limiting + lazy cleanup
  * =====================================================
  */
 
@@ -177,7 +180,44 @@ export default {
 
     /* ================= HEALTH ================= */
     if (path === '/api/health') {
-      return sendJSON({ service: 'marketplace', version: '5.0.0', status: 'running' });
+      return sendJSON({ service: 'marketplace', version: '5.1.0', status: 'running' });
+    }
+
+    /* ================= DEEPL TRANSLATE PROXY ================= */
+    if (path === '/api/translate' && method === 'POST') {
+      const rateKey = `tr:${request.headers.get('cf-connecting-ip') || 'anon'}`;
+      if (!rate(rateKey, 30, 60000)) {
+        return sendJSON({ error: 'Too many translation requests' }, 429);
+      }
+      try {
+        const b = await request.json().catch(() => ({}));
+        const texts = Array.isArray(b.text) ? b.text : (typeof b.text === 'string' ? [b.text] : []);
+        const targetLang = String(b.target_lang || '').toUpperCase().replace(/[^A-Z-]/g, '').slice(0, 5);
+        if (!texts.length || !targetLang) {
+          return sendJSON({ error: 'text (array or string) and target_lang required' }, 400);
+        }
+        const DEEPL_KEY = env.DEEPL_API_KEY;
+        if (!DEEPL_KEY) {
+          return sendJSON({ error: 'Translation service not configured' }, 503);
+        }
+        const deeplRes = await fetch('https://api-free.deepl.com/v2/translate', {
+          method: 'POST',
+          headers: {
+            'Authorization': `DeepL-Auth-Key ${DEEPL_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ text: texts.slice(0, 50), target_lang: targetLang })
+        });
+        const deeplData = await deeplRes.json();
+        if (!deeplRes.ok) {
+          return sendJSON({ error: deeplData.message || 'Translation failed' }, deeplRes.status);
+        }
+        return sendJSON({
+          translations: (deeplData.translations || []).map(t => t.text)
+        });
+      } catch (err) {
+        return sendJSON({ error: 'Translation proxy error' }, 500);
+      }
     }
 
     /* ================= PRICE CONFIG (estimate prices, admin-editable) ================= */
@@ -203,10 +243,14 @@ export default {
     };
 
     if (path === '/api/price-config' && method === 'GET') {
-      const { results } = await db.prepare('SELECT key, value FROM price_config').all();
-      const overrides = {};
-      for (const r of results) {overrides[r.key] = Number(r.value);}
-      return sendJSON({ ...PRICE_DEFAULTS, ...overrides });
+      try {
+        const { results } = await db.prepare('SELECT key, value FROM price_config').all();
+        const overrides = {};
+        for (const r of results) {overrides[r.key] = Number(r.value);}
+        return sendJSON({ ...PRICE_DEFAULTS, ...overrides });
+      } catch (err) {
+        return sendJSON({ ...PRICE_DEFAULTS });
+      }
     }
 
     if (path === '/api/admin/price-config' && method === 'PUT') {
@@ -384,7 +428,7 @@ export default {
           return sendJSON({ error: 'Your seller account is hidden due to unpaid commission. Pay your pending commission to get unlisted.' }, 403);
         }
 
-        const b = await request.json();
+        const b = await request.json().catch(() => ({}));
 
         const category = b.category === 'popularity' ? 'popularity' : 'account';
         const cleanUid = category === 'account'
@@ -498,7 +542,7 @@ export default {
           return sendJSON({ error: 'Forbidden' }, 403);
         }
 
-        const b = await request.json();
+        const b = await request.json().catch(() => ({}));
         const price = Number(b.price);
         if (b.price !== undefined && (!Number.isFinite(price) || price < 1 || price > 10000000)) {
           return sendJSON({ error: 'Price must be between â‚¹1 and â‚¹10,000,000' }, 400);
@@ -602,7 +646,7 @@ export default {
           deliveryStatus = 'delivered';
           paymentStatus = 'paid';
         } else if (action === 'cancel') {
-          if ((!isBuyer && !isSeller && !isAdminU) || po.delivery_status === 'delivered') {
+          if ((!isBuyer && !isSeller && !isAdminU) || po.delivery_status === 'delivered' || po.delivery_status === 'cancelled') {
             return sendJSON({ error: 'Cannot cancel this order' }, 400);
           }
           deliveryStatus = 'cancelled';
@@ -706,7 +750,7 @@ export default {
           return sendJSON({ error: 'Too many purchase attempts. Try later.' }, 429);
         }
 
-        const b = await request.json();
+        const b = await request.json().catch(() => ({}));
         if (!b.listing_id) {return sendJSON({ error: 'listing_id required' }, 400);}
 
         const listing = await db.prepare('SELECT * FROM listings WHERE id=? AND deleted_at IS NULL').bind(b.listing_id).first();
@@ -722,7 +766,7 @@ export default {
           return sendJSON({ error: 'Valid target_uid required (your BGMI UID for delivery)' }, 400);
         }
 
-        const expressCharge = b.express_delivery ? (Number(listing.express_charge) || 0) : 0;
+        const expressCharge = (b.express_delivery && listing.express_enabled) ? (Number(listing.express_charge) || 0) : 0;
         const finalPrice = Number(listing.price || 0) + expressCharge;
 
         const insert = await db.prepare(
@@ -748,6 +792,9 @@ export default {
              VALUES (?, ?, 'purchase', datetime('now'))`
           ).bind(String(user.id), listing.points).run();
         }
+
+        // Ensure seller row exists so commission UPDATE doesn't silently fail
+        await ensureSeller(String(listing.seller_id));
 
         // 2.5% commission accrues to seller on every sale
         const commission = Math.round(Number(finalPrice || 0) * 0.025 * 100) / 100;
@@ -815,7 +862,7 @@ export default {
         const user = await verifyJWT(request);
         if (!user) {return sendJSON({ error: 'Unauthorized' }, 401);}
 
-        const b = await request.json();
+        const b = await request.json().catch(() => ({}));
         if (!b.listing_id || !b.stars) {return sendJSON({ error: 'listing_id & stars required' }, 400);}
         const stars = Number(b.stars);
         if (!stars || stars < 1 || stars > 5) {return sendJSON({ error: 'stars must be 1-5' }, 400);}
@@ -845,6 +892,7 @@ export default {
           'UPDATE listings SET avg_rating=?, review_count=?, updated_at=datetime(\'now\') WHERE id=?'
         ).bind(Number(agg.avg || 0).toFixed(1), agg.cnt, b.listing_id).run();
 
+        await ensureSeller(String(listing.seller_id));
         const sellerAgg = await db.prepare(
           'SELECT AVG(stars) AS avg, COUNT(*) AS cnt FROM reviews WHERE seller_id=?'
         ).bind(String(listing.seller_id)).first();
@@ -935,6 +983,7 @@ export default {
         if (!user || user.role !== 'admin') {return sendJSON({ error: 'Admin only' }, 403);}
 
         const id = Number(path.split('/').pop());
+        if (!Number.isFinite(id) || id < 1) return sendJSON({ error: 'Invalid ID' }, 400);
         const b = await request.json().catch(() => ({}));
         const action = b.action || b.decision; // approve / reject
         if (!['approve', 'reject'].includes(action)) {
@@ -1042,7 +1091,7 @@ export default {
         if (!user) {return sendJSON({ error: 'Unauthorized' }, 401);}
         await ensureSeller(user.id);
 
-        const b = await request.json();
+        const b = await request.json().catch(() => ({}));
         const city = cleanVal(b.city, 40);
         const meetupNote = cleanVal(b.meetup_note, 120);
 
@@ -1085,7 +1134,7 @@ export default {
           return sendJSON({ error: 'Too many meetup requests. Try later.' }, 429);
         }
 
-        const b = await request.json();
+        const b = await request.json().catch(() => ({}));
         if (!b.listing_id) {return sendJSON({ error: 'listing_id required' }, 400);}
 
         const listing = await db.prepare('SELECT * FROM listings WHERE id=? AND deleted_at IS NULL').bind(b.listing_id).first();
@@ -1140,6 +1189,7 @@ export default {
         const parts = path.split('/');
         if (parts.length < 5) {return sendJSON({ error: 'Invalid path' }, 400);}
         const id = Number(parts[3]);
+        if (!Number.isFinite(id) || id < 1) return sendJSON({ error: 'Invalid ID' }, 400);
         const action = parts[4]; // respond / complete
 
         const user = await verifyJWT(request);
@@ -1152,7 +1202,7 @@ export default {
           if (String(req.seller_id) !== String(user.id) && String(user.role).toLowerCase() !== 'admin') {
             return sendJSON({ error: 'Forbidden' }, 403);
           }
-          const b = await request.json();
+          const b = await request.json().catch(() => ({}));
           const decision = b.decision === 'approved' ? 'approved' : (b.decision === 'declined' ? 'declined' : null);
           if (!decision) {return sendJSON({ error: 'decision must be approved or declined' }, 400);}
           if (req.status !== 'pending') {return sendJSON({ error: 'Already responded' }, 409);}
@@ -1272,6 +1322,7 @@ export default {
         if (!user || user.role !== 'admin') {return sendJSON({ error: 'Admin only' }, 403);}
 
         const id = Number(path.split('/').pop());
+        if (!Number.isFinite(id) || id < 1) return sendJSON({ error: 'Invalid ID' }, 400);
         const b = await request.json().catch(() => ({}));
         const action = b.action; // approve / reject
         if (!['approve', 'reject'].includes(action)) {return sendJSON({ error: 'Invalid action' }, 400);}
