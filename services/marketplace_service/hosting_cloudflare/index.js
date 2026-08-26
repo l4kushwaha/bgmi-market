@@ -580,12 +580,12 @@ export default {
           JSON.stringify(b.supercar !== undefined ? b.supercar : safeParseArr(listing.supercar)),
           JSON.stringify(b.ultimate !== undefined ? b.ultimate : safeParseArr(listing.ultimate)),
           JSON.stringify(b.images !== undefined ? b.images : safeParseArr(listing.images)),
-          String(b.delivery_time || '').replace(/[<>&'"`]/g, '').trim().slice(0, 60) || null,
-          (b.meetup_available === 1 || b.meetup_available === true || String(b.meetup_available) === '1') ? 1 : 0,
-          cleanVal(b.city, 40) || null,
+          b.delivery_time !== undefined ? (String(b.delivery_time || '').replace(/[<>&'"`]/g, '').trim().slice(0, 60) || null) : (listing.delivery_time || null),
+          b.meetup_available !== undefined ? ((b.meetup_available === 1 || b.meetup_available === true || String(b.meetup_available) === '1') ? 1 : 0) : (Number(listing.meetup_available) || 0),
+          b.city !== undefined ? (cleanVal(b.city, 40) || null) : (listing.city || null),
           (b.express_enabled === 1 || b.express_enabled === true || String(b.express_enabled) === '1') ? 1 : (listing.express_enabled || 0),
           b.express_charge !== undefined ? Math.max(0, Math.min(10000000, Number(b.express_charge) || 0)) : (listing.express_charge || 0),
-          String(b.account_highlights || '').replace(/[<>&'"`]/g, '').trim().slice(0, 500) || null,
+          b.account_highlights !== undefined ? (String(b.account_highlights || '').replace(/[<>&'"`]/g, '').trim().slice(0, 500) || null) : (listing.account_highlights || null),
           listingId
         ).run();
 
@@ -694,6 +694,7 @@ export default {
       if (path === '/api/purchases/schedule' && method === 'POST') {
         const user = await verifyJWT(request);
         if (!user) { return sendJSON({ error: 'Unauthorized' }, 401); }
+        if (!rate(`sched:${user.id}`, 20, 60000)) return sendJSON({ error: 'Too many requests' }, 429);
         
         const b = await request.json().catch(() => ({}));
         if (!b.purchase_id || !b.scheduled_time) {
@@ -727,6 +728,7 @@ export default {
       if (path === '/api/purchases/confirm-delivery' && method === 'POST') {
         const user = await verifyJWT(request);
         if (!user) { return sendJSON({ error: 'Unauthorized' }, 401); }
+        if (!rate(`confirm:${user.id}`, 20, 60000)) return sendJSON({ error: 'Too many requests' }, 429);
         
         const b = await request.json().catch(() => ({}));
         if (!b.purchase_id) return sendJSON({ error: 'purchase_id required' }, 400);
@@ -1279,6 +1281,7 @@ export default {
       if (path === '/api/commission/pay' && method === 'POST') {
         const user = await verifyJWT(request);
         if (!user) {return sendJSON({ error: 'Unauthorized' }, 401);}
+        if (!rate(`comm:${user.id}`, 10, 60000)) return sendJSON({ error: 'Too many requests' }, 429);
         await ensureSeller(user.id);
 
         const seller = await db.prepare(
